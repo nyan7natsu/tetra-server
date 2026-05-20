@@ -12,6 +12,8 @@ use wtransport::Identity;
 use wtransport::ServerConfig;
 use wtransport::endpoint::IncomingSession;
 
+use crate::payload;
+
 pub async fn handle_connection(session: IncomingSession) -> Result<()> {
     let mut buffer = vec![0; 65536].into_boxed_slice();
 
@@ -34,27 +36,26 @@ pub async fn handle_connection(session: IncomingSession) -> Result<()> {
                 let Some(bytes_read) = stream.1.read(&mut buffer).await? else {
                     continue;
                 };
+                let data = &buffer[..bytes_read];
 
-                let str_data = std::str::from_utf8(&buffer[..bytes_read])?;
-
-                debug!("Received (bi) '{str_data}' from client");
-
-                stream.0.write_all(b"ACK").await?;
-            }
-            stream = connection.accept_uni() => {
-                let mut stream = stream?;
-                debug!("Accepted UNI stream");
-
-                let Some(bytes_read) = stream.read(&mut buffer).await? else {
-                    continue;
+                let payload: payload::GameMessage = match wincode::deserialize(data) {
+                    Ok(payload) => payload,
+                    Err(e) => {
+                        error!("Failed to deserialize payload: {e}");
+                        continue;
+                    }
                 };
 
-                let str_data = std::str::from_utf8(&buffer[..bytes_read])?;
+                match payload {
+                    payload::GameMessage::JoinRoom(p) => {
+                        info!("Received join room request");
+                    }
+                    payload::GameMessage::Attack { power } => {
+                        info!("Received attack with power {power}");
+                    }
+                }
 
-                debug!("Received (uni) '{str_data}' from client");
-
-                let mut stream = connection.open_uni().await?.await?;
-                stream.write_all(b"ACK").await?;
+                stream.0.write_all(b"ACK").await?;
             }
             dgram = connection.receive_datagram() => {
                 let dgram = dgram?;

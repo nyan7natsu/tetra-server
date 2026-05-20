@@ -14,6 +14,7 @@ use wtransport::endpoint::IncomingSession;
 use wtransport::tls::Sha256DigestFmt;
 
 mod connection;
+mod payload;
 
 #[tokio::main]
 async fn main() -> Result<()> {
