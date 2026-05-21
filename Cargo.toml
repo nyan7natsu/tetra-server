@@ -4,10 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-wincode = { version = "0.5.3", features = ["derive"] }
+wincode = { version = "0.5.4", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = {version = "1.52.3", features = ["full"] }
-wtransport = "0.7.1"
+tokio-tungstenite = "0.29"
+wtransport = "0.7"
+webrtc = "0.17"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 anyhow = "1.0.102"
+serde_json = "1.0.149"
+pastey = "0.2.3"
+uuid = { version = "1.23.1", features = ["serde", "v4"] }
+futures-util = "0.3.28"
+bytes = "1.4.0"
