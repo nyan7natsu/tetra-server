@@ -21,111 +21,6 @@ impl From<UuidBytes> for Uuid {
     }
 }
 
-macro_rules! payload {
-    ($name:ident) => {
-        pastey::paste! {
-            #[derive(Serialize, Deserialize, SchemaRead, SchemaWrite, Debug)]
-            pub struct [<$name Payload>] { }
-
-            impl [<$name Payload>] {
-                #[allow(dead_code)]
-                pub fn to_binary(&self) -> Result<Vec<u8>, wincode::WriteError> {
-                    wincode::config::serialize(self, crate::payload::wincode_config())
-                }
-            }
-        }
-    };
-    ($name:ident, $(($key:ident, $type:ty)),*) => {
-        pastey::paste! {
-            #[derive(Serialize, Deserialize, SchemaRead, SchemaWrite, Debug)]
-            pub struct [<$name Payload>] {
-                $(pub $key: $type),*
-            }
-
-            impl [<$name Payload>] {
-                #[allow(dead_code)]
-                pub fn to_binary(&self) -> Result<Vec<u8>, wincode::WriteError> {
-                    wincode::config::serialize(self, crate::payload::wincode_config())
-                }
-            }
-        }
-    };
-}
-
-payload!(JSONRequest, (data, String));
-payload!(JSONResponse, (data, String));
-payload!(Ping, (id, UuidBytes));
-payload!(Pong, (id, UuidBytes));
-
-macro_rules! jpayload {
-    ($name:ident) => {
-        pastey::paste! {
-            /**
-             * Payloadの`data`の中身をparseした構造体
-             */
-            #[derive(Serialize, Deserialize, Debug)]
-            #[allow(dead_code)]
-            pub struct [<JSON $name>] { }
-
-            impl [<JSON $name>] {
-                /**
-                 * 自身をstringifyしてPayloadに変換する関数
-                 */
-                #[allow(dead_code)]
-                pub fn to_payload(&self) -> Result<JSONResponsePayload, serde_json::Error> {
-                    Ok(JSONResponsePaload { data: serde_json::to_string(self)? })
-                }
-            }
-        }
-    };
-    ($name:ident, $(($key:ident, $type:ty)),*) => {
-        pastey::paste! {
-            /**
-             * Payloadの`data`の中身をシリアライズした構造体
-             */
-            #[derive(Serialize, Deserialize, Debug)]
-            #[allow(dead_code)]
-            pub struct [<JSON $name>] {
-                $(pub $key: $type),*
-            }
-
-            impl [<JSON $name>] {
-                /**
-                 * 自身をstringifyしてPayloadに変換する関数
-                 */
-                #[allow(dead_code)]
-                pub fn to_payload(&self) -> Result<JSONResponsePayload, serde_json::Error> {
-                    Ok(JSONResponsePayload { data: serde_json::to_string(self)? })
-                }
-            }
-        }
-    };
-}
-
-jpayload!(Ping, (id, Uuid));
-jpayload!(Pong, (id, Uuid));
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ListRoomInfo {
-    pub id: Uuid,
-    pub room_name: String,
-    pub players: u8,
-    pub max_players: u8,
-    pub locked: bool,
-}
-
-jpayload!(GetRoomsRequest, (id, Uuid));
-jpayload!(GetRoomsResponse, (id, Uuid), (rooms, Vec<ListRoomInfo>));
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "type")]
-pub enum JsonMessage {
-    JSONPing(JSONPing),
-    JSONPong(JSONPong),
-    JSONGetRoomsRequest(JSONGetRoomsRequest),
-    JSONGetRoomsResponse(JSONGetRoomsResponse),
-}
-
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum JsonPayloadError {
@@ -161,46 +56,134 @@ pub fn wrap_with_opcode(op: Opcode, body: Vec<u8>) -> Vec<u8> {
     buf
 }
 
+macro_rules! json_message {
+    (
+        enum $enum_name:ident {
+            $(
+                // 各行のパターン： 構造体名, [ (フィールド, 型), (フィールド, 型), ... ]
+                // ※ フィールドが0個の場合も考慮して `*`（0回以上の繰り返し）にします
+                $struct_name:ident $(, ( $field_name:ident, $field_type:ty ) )*
+            );* $(;)? // 各メッセージの区切りはセミコロン（;）にします
+        }
+    ) => {
+        pastey::paste! {
+            $(
+                /**
+                 * Payloadの`data`の中身をシリアライズした構造体
+                 */
+                #[derive(Serialize, Deserialize, Debug)]
+                #[serde(rename_all = "camelCase")]
+                #[allow(dead_code)]
+                pub struct [<JSON $struct_name>] {
+                    $( pub $field_name: $field_type ),*
+                }
+
+                impl [<JSON $struct_name>] {
+                    /**
+                     * 自身をstringifyしてPayloadに変換する関数
+                     */
+                    #[allow(dead_code)]
+                    pub fn to_payload(&self) -> Result<JSONResponsePayload, serde_json::Error> {
+                        Ok(JSONResponsePayload { data: serde_json::to_string(self)? })
+                    }
+                }
+            )*
+
+            #[derive(Serialize, Deserialize, Debug)]
+            #[serde(tag = "type")]
+            pub enum $enum_name {
+                $(
+                    [<JSON $struct_name>]([<JSON $struct_name>]),
+                )*
+            }
+        }
+    };
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRoomInfo {
+    pub id: Uuid,
+    pub room_name: String,
+    pub players: u8,
+    pub max_players: u8,
+    pub locked: bool,
+    pub tags: Vec<u32>,
+}
+
+json_message!(
+    enum JsonMessage {
+        Ping, (id, Uuid);
+        Pong, (id, Uuid);
+        GetRoomsRequest, (id, Uuid);
+        GetRoomsResponse, (id, Uuid), (rooms, Vec<ListRoomInfo>);
+    }
+);
+
 macro_rules! schemas {
-        ($($name:ident = $val:expr),*) => {
+    (
+        enum $enum_name:ident {
+            $(
+                // 各行のパターン： 構造体名, [ (フィールド, 型), (フィールド, 型), ... ]
+                // ※ フィールドが0個の場合も考慮して `*`（0回以上の繰り返し）にします
+                $struct_name:ident, $opcode:expr $(, ( $field_name:ident, $field_type:ty ) )*
+            );* $(;)? // 各メッセージの区切りはセミコロン（;）にします
+        }
+    ) => {
+        pastey::paste! {
+            $(
+                #[derive(Serialize, Deserialize, SchemaRead, SchemaWrite, Debug)]
+                pub struct [<$struct_name Payload>] {
+                    $(pub $field_name: $field_type),*
+                }
+
+                impl [<$struct_name Payload>] {
+                    #[allow(dead_code)]
+                    pub fn to_binary(&self) -> Result<Vec<u8>, wincode::WriteError> {
+                        wincode::config::serialize(self, crate::payload::wincode_config())
+                    }
+                }
+            )*
+
+            #[derive(Serialize, Deserialize, SchemaRead, SchemaWrite, Debug, Clone, Copy)]
+            #[allow(dead_code)]
+            #[repr(u8)]
+            pub enum Opcode {
+                $(
+                    [<$struct_name Payload>] = $opcode,
+                )*
+            }
+
             #[derive(Serialize, Deserialize, Debug)]
             #[allow(dead_code)]
             #[repr(u8)]
-            pub enum GameMessage {
+            pub enum $enum_name {
                 $(
-                    $name($name) = $val,
+                    [<$struct_name Payload>]([<$struct_name Payload>]) = $opcode,
                 )*
             }
-        };
-    }
 
-#[derive(Serialize, Deserialize, SchemaRead, SchemaWrite, Debug, Clone, Copy)]
-#[allow(dead_code)]
-#[repr(u8)]
-pub enum Opcode {
-    PingPayload = 0x01,
-    PongPayload = 0x02,
-    JSONRequestPayload = 0x10,
-    JSONResponsePayload = 0x11,
-}
-
-impl TryFrom<u8> for Opcode {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0x01 => Ok(Opcode::PingPayload),
-            0x02 => Ok(Opcode::PongPayload),
-            0x10 => Ok(Opcode::JSONRequestPayload),
-            0x11 => Ok(Opcode::JSONResponsePayload),
-            _ => Err(()),
+            impl TryFrom<u8> for Opcode {
+                type Error = ();
+                fn try_from(value: u8) -> Result<Self, Self::Error> {
+                    match value {
+                        $(
+                            $opcode => Ok(Opcode::[<$struct_name Payload>]),
+                        )*
+                        _ => Err(()),
+                    }
+                }
+            }
         }
-    }
+    };
 }
 
 schemas! {
-    PingPayload = 0x01,
-    PongPayload = 0x02,
-    JSONRequestPayload = 0x10,
-    JSONResponsePayload = 0x11
+    enum GameMessage {
+        Ping, 0x01, (id, UuidBytes);
+        Pong, 0x02, (id, UuidBytes);
+        JSONRequest, 0x03, (data, String);
+        JSONResponse, 0x04, (data, String);
+        Close, 0x05;
+    }
 }

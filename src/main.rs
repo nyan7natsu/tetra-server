@@ -25,7 +25,7 @@ mod payload;
 mod room;
 mod signaling;
 
-use connection::handle_connection;
+use connection::handle_reliable_connection;
 
 macro_rules! nest {
     ($($n:ident),+ $(,)?) => {
@@ -82,7 +82,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let game = Arc::new(Mutex::new(game::Game::default()));
 
-    game.lock().await.new_room("TEST".to_string(), 2, None);
+    game.lock()
+        .await
+        .new_room("TEST".to_string(), 2, None, vec![]);
 
     while let Ok((stream, _)) = listener.accept().await {
         nest!(game, api);
@@ -145,12 +147,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     println!("Data channel created: {dc_label}");
 
-                    Box::pin(async move {
-                        nest!(game);
+                    match dc_label.as_str() {
+                        connection::RELIABLE_CHANNEL_LABEL=> Box::pin(async move {
+                            nest!(game);
 
-                        let _ = tokio::spawn(handle_connection(dc, game))
-                            .instrument(info_span!("handle_connection", dc_label = %dc_label));
-                    })
+                            let _ = tokio::spawn(handle_reliable_connection(dc, game))
+                                .instrument(info_span!("handle_connection", dc_label = %dc_label));
+                        }),
+                        connection::UNRELIABLE_CHANNEL_LABEL => Box::pin(async move {
+                            nest!(game);
+
+                            let _ = tokio::spawn(connection::handle_unreliable_connection(dc, game))
+                                .instrument(info_span!("handle_connection", dc_label = %dc_label));
+                        }),
+                        _ => {
+                            debug!("Unknown data channel label: {dc_label}");
+                            return Box::pin(async {});
+                        }
+                    }
                 },
             ));
 
