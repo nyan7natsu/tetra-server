@@ -22,14 +22,14 @@ pub struct ChannelPair {
 
 #[derive(Clone)]
 pub struct Game {
-    pub rooms: Vec<Room>,
+    pub rooms: HashMap<Uuid, Room>,
     connections: HashMap<Uuid, ChannelPair>,
 }
 
 impl Default for Game {
     fn default() -> Self {
         Self {
-            rooms: vec![],
+            rooms: HashMap::new(),
             connections: HashMap::new(),
         }
     }
@@ -78,10 +78,8 @@ impl Game {
     }
 
     pub async fn remove_connection(&mut self, player_id: &Uuid) {
-        let reliable = self
-            .get_reliable_connection(player_id);
-        let unreliable = self
-            .get_unreliable_connection(player_id);
+        let reliable = self.get_reliable_connection(player_id);
+        let unreliable = self.get_unreliable_connection(player_id);
         if let Some(dc) = reliable {
             if let Err(e) = dc.close().await {
                 eprintln!("Failed to close reliable data channel: {e}");
@@ -121,6 +119,7 @@ impl Game {
 
     pub fn new_room(
         &mut self,
+        owner: Uuid,
         room_name: String,
         max_players: u8,
         password: Option<String>,
@@ -128,15 +127,15 @@ impl Game {
     ) -> Uuid {
         let room = Room {
             status: RoomStatus::Waiting,
-            id: Uuid::new_v4(),
+            owner,
             players: vec![],
             room_name,
             max_players,
             password,
             tags: tags,
         };
-        let room_id = room.id;
-        self.rooms.push(room);
+        let room_id = Uuid::new_v4();
+        self.rooms.insert(room_id, room);
         room_id
     }
 }

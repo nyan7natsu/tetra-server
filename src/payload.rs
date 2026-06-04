@@ -117,6 +117,16 @@ json_message!(
         Pong, (id, Uuid);
         GetRoomsRequest, (id, Uuid);
         GetRoomsResponse, (id, Uuid), (rooms, Vec<ListRoomInfo>);
+        CreateRoomRequest, (id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>);
+        CreateRoomResponse, (id, Uuid), (room_id, Uuid);
+        JoinRoomRequest, (id, Uuid), (room_id, Uuid), (password, Option<String>), (username, String);
+        JoinRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
+        LeaveRoomRequest, (id, Uuid), (room_id, Uuid);
+        LeaveRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
+        RoomUpdateRequest, (id, Uuid), (room_id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>);
+        RoomUpdateResponse, (id, Uuid), (success, bool), (message, Option<String>);
+        RoomInfoNotification, (room_id, Uuid), (room_name, String), (players, Vec<(Uuid, String)>), (max_players, u8), (tags, Vec<u32>);
+        RoomLeaveNotification, (message, String);
     }
 );
 
