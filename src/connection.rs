@@ -9,6 +9,24 @@ use crate::payload;
 pub const RELIABLE_CHANNEL_LABEL: &str = "reliable-main";
 pub const UNRELIABLE_CHANNEL_LABEL: &str = "unreliable-main";
 
+macro_rules! jsend {
+    ( $dc:expr, $msg_variant:ident { $($field:tt)* } ) => {
+        // マクロが裏側で「重複する表現」をガッチャンコして組み立ててくれる！
+        let msg = payload::JsonMessage::$msg_variant(payload::$msg_variant {
+            $($field)*
+        });
+
+        let body = msg
+            .to_response_body()
+            .expect("Failed to build JSON response");
+        let binary_resp = payload::wrap_with_opcode(payload::Opcode::JSONResponsePayload, body);
+
+        if let Err(e) = $dc.send(&Bytes::from(binary_resp)).await {
+            error!("Failed to send response: {e}");
+        }
+    };
+}
+
 pub async fn handle_reliable_connection(
     dc: Arc<webrtc::data_channel::RTCDataChannel>,
     game: Arc<Mutex<Game>>,
@@ -78,7 +96,10 @@ pub async fn handle_reliable_connection(
                     info!("Received PongPayload: {payload:?}");
                 }
                 payload::Opcode::ClosePayload => {
-                    info!("Received Close opcode from player [{}]. Closing connection...", id);
+                    info!(
+                        "Received Close opcode from player [{}]. Closing connection...",
+                        id
+                    );
                     let mut game = game.lock().await;
                     if let Some(state) = game.get_connection_state(&id) {
                         let mut state = state.lock().unwrap();
@@ -103,41 +124,229 @@ pub async fn handle_reliable_connection(
                     match serde_json::from_str::<payload::JsonMessage>(&s) {
                         Ok(msg) => match msg {
                             payload::JsonMessage::JSONPing(req) => {
-                                let resp = payload::JsonMessage::JSONPong(payload::JSONPong {
-                                    id: req.id,
-                                });
-                                let body = resp
-                                    .to_response_body()
-                                    .expect("Failed to build JSONPong response");
-                                let binary_resp = payload::wrap_with_opcode(
-                                    payload::Opcode::JSONResponsePayload,
-                                    body,
-                                );
-                                if let Err(e) = dc_clone.send(&Bytes::from(binary_resp)).await {
-                                    error!("Failed to send JSONPong response: {e}");
-                                }
+                                jsend!(dc_clone, JSONPong { id: req.id });
                             }
                             payload::JsonMessage::JSONGetRoomsRequest(req) => {
                                 let req_id = req.id;
-                                let rooms: Vec<crate::room::Room> = game.lock().await.rooms.clone();
-                                let response_rooms: Vec<payload::ListRoomInfo> = rooms
-                                    .into_iter()
-                                    .filter(|room| room.status == crate::room::RoomStatus::Waiting)
-                                    .map(|room| payload::ListRoomInfo {
-                                        id: room.id,
-                                        room_name: room.room_name,
-                                        players: room.players.len() as u8,
-                                        max_players: room.max_players,
-                                        locked: room.password.is_some(),
-                                        tags: room.tags.into_iter().map(|tag| tag as u32).collect(),
+                                let game = game.lock().await;
+                                let rooms: Vec<payload::ListRoomInfo> = game
+                                    .rooms
+                                    .iter()
+                                    .filter(|(_, raw_room)| {
+                                        raw_room.status == crate::room::RoomStatus::Waiting
+                                    })
+                                    .map(|(id, raw_room)| payload::ListRoomInfo {
+                                        id: *id,
+                                        room_name: raw_room.room_name.clone(),
+                                        players: raw_room.players.len() as u8,
+                                        max_players: raw_room.max_players,
+                                        locked: raw_room.password.is_some(),
+                                        tags: raw_room.tags.iter().map(|tag| *tag as u32).collect(),
                                     })
                                     .collect();
 
-                                let resp = payload::JSONGetRoomsResponse {
-                                    id: req_id,
-                                    rooms: response_rooms,
+                                jsend!(dc_clone, JSONGetRoomsResponse { id: req_id, rooms });
+                            }
+                            payload::JsonMessage::JSONCreateRoomRequest(req) => {
+                                let req_id = req.id;
+                                let room_name = req.room_name;
+                                let max_players = req.max_players;
+                                let password = req.password;
+                                let tags = req
+                                    .tags
+                                    .into_iter()
+                                    .map(|t| match t {
+                                        0 => crate::room::RoomTag::PuyoTet,
+                                        1 => crate::room::RoomTag::PuyoOnly,
+                                        2 => crate::room::RoomTag::TetOnly,
+                                        3 => crate::room::RoomTag::Casual,
+                                        4 => crate::room::RoomTag::Competitive,
+                                        _ => {
+                                            error!("Unknown room tag: {t}");
+                                            crate::room::RoomTag::Casual
+                                        }
+                                    })
+                                    .collect();
+
+                                let room_id = game.lock().await.new_room(
+                                    id,
+                                    room_name,
+                                    max_players,
+                                    password,
+                                    tags,
+                                );
+
+                                jsend!(
+                                    dc_clone,
+                                    JSONCreateRoomResponse {
+                                        id: req_id,
+                                        room_id
+                                    }
+                                );
+                            }
+                            payload::JsonMessage::JSONJoinRoomRequest(req) => {
+                                let req_id = req.id;
+                                let room_id = req.room_id;
+                                let password = req.password;
+                                let username = req.username;
+
+                                let mut game = game.lock().await;
+                                let room = match game.rooms.get_mut(&room_id) {
+                                    Some(r) => r,
+                                    None => {
+                                        jsend!(
+                                            dc_clone,
+                                            JSONJoinRoomResponse {
+                                                id: req_id,
+                                                success: false,
+                                                message: Some("Room not found".to_string()),
+                                            }
+                                        );
+                                        return;
+                                    }
                                 };
-                                let body = payload::JsonMessage::JSONGetRoomsResponse(resp)
+
+                                if room.password.is_some() && room.password != password {
+                                    jsend!(
+                                        dc_clone,
+                                        JSONJoinRoomResponse {
+                                            id: req_id,
+                                            success: false,
+                                            message: Some("Incorrect password".to_string()),
+                                        }
+                                    );
+                                    return;
+                                }
+
+                                if room.players.len() as u8 >= room.max_players {
+                                    jsend!(
+                                        dc_clone,
+                                        JSONJoinRoomResponse {
+                                            id: req_id,
+                                            success: false,
+                                            message: Some("Room is full".to_string()),
+                                        }
+                                    );
+                                    return;
+                                }
+
+                                if room.status != crate::room::RoomStatus::Waiting {
+                                    jsend!(
+                                        dc_clone,
+                                        JSONJoinRoomResponse {
+                                            id: req_id,
+                                            success: false,
+                                            message: Some("Game has already started".to_string()),
+                                        }
+                                    );
+                                    return;
+                                }
+
+                                room.players.push((id, username));
+
+                                jsend!(
+                                    dc_clone,
+                                    JSONJoinRoomResponse {
+                                        id: req_id,
+                                        success: true,
+                                        message: None,
+                                    }
+                                );
+                            }
+                            payload::JsonMessage::JSONLeaveRoomRequest(req) => {
+                                let req_id = req.id;
+                                let room_id = req.room_id;
+
+                                let mut game = game.lock().await;
+                                let leave_result = game
+                                    .rooms
+                                    .get_mut(&room_id)
+                                    .map(|room| {
+                                        room.players.retain(|(pid, _)| *pid != id);
+                                        Ok(())
+                                    })
+                                    .unwrap_or_else(|| Err("Room not found".to_string()));
+
+                                jsend!(
+                                    dc_clone,
+                                    JSONLeaveRoomResponse {
+                                        id: req_id,
+                                        success: leave_result.is_ok(),
+                                        message: leave_result.err()
+                                    }
+                                );
+                            }
+                            payload::JsonMessage::JSONRoomUpdateRequest(req) => {
+                                let req_id = req.id;
+                                let room_id = req.room_id;
+
+                                let mut game = game.lock().await;
+                                let room = match game.rooms.get_mut(&room_id) {
+                                    Some(r) => r,
+                                    None => {
+                                        jsend!(
+                                            dc_clone,
+                                            JSONRoomUpdateResponse {
+                                                id: req_id,
+                                                success: false,
+                                                message: Some("Room not found".to_string()),
+                                            }
+                                        );
+                                        return;
+                                    }
+                                };
+
+                                if room.owner != id {
+                                    jsend!(
+                                        dc_clone,
+                                        JSONRoomUpdateResponse {
+                                            id: req_id,
+                                            success: false,
+                                            message: Some(
+                                                "Only the room owner can update the room"
+                                                    .to_string()
+                                            ),
+                                        }
+                                    );
+                                    return;
+                                }
+
+                                let update_result = (|| {
+                                    room.room_name = req.room_name;
+                                    if req.max_players < room.players.len() as u8 {
+                                        return Err(
+                                            "Max players cannot be less than current player count"
+                                                .to_string(),
+                                        );
+                                    }
+                                    room.max_players = req.max_players;
+                                    if req.password.is_some() {
+                                        room.password = req.password;
+                                    }
+                                    room.tags = req
+                                        .tags
+                                        .into_iter()
+                                        .map(|t| match t {
+                                            0 => crate::room::RoomTag::PuyoTet,
+                                            1 => crate::room::RoomTag::PuyoOnly,
+                                            2 => crate::room::RoomTag::TetOnly,
+                                            3 => crate::room::RoomTag::Casual,
+                                            4 => crate::room::RoomTag::Competitive,
+                                            _ => {
+                                                error!("Unknown room tag: {t}");
+                                                crate::room::RoomTag::Casual
+                                            }
+                                        })
+                                        .collect();
+                                    Ok(())
+                                })();
+
+                                let resp = payload::JSONRoomUpdateResponse {
+                                    id: req_id,
+                                    success: update_result.is_ok(),
+                                    message: update_result.err(),
+                                };
+                                let body = payload::JsonMessage::JSONRoomUpdateResponse(resp)
                                     .to_response_body()
                                     .expect("Failed to build JSON response");
                                 let binary_resp = payload::wrap_with_opcode(
@@ -199,8 +408,6 @@ pub async fn handle_reliable_connection(
         })
     }));
 }
-
-
 
 pub async fn handle_unreliable_connection(
     dc: Arc<webrtc::data_channel::RTCDataChannel>,

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 #[repr(u32)]
 #[allow(dead_code)]
 pub enum RoomTag {
@@ -26,10 +26,10 @@ pub enum RoomStatus {
 pub struct Room {
     /// 部屋の状態
     pub status: RoomStatus,
-    /// 部屋の内部ID
-    pub id: Uuid,
-    /// プレイヤーIDリスト
-    pub players: Vec<Uuid>,
+    /// ルームのオーナーID
+    pub owner: Uuid,
+    /// プレイヤーIDと名前のタプルのVec
+    pub players: Vec<(Uuid, String)>,
     /// 部屋の名前
     pub room_name: String,
     /// 最大プレイヤー数

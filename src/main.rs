@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     game.lock()
         .await
-        .new_room("TEST".to_string(), 2, None, vec![]);
+        .new_room(uuid::Uuid::new_v4(), "TEST".to_string(), 2, None, vec![]);
 
     while let Ok((stream, _)) = listener.accept().await {
         nest!(game, api);
