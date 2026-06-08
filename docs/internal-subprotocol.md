@@ -1,0 +1,90 @@
+# 内部サブプロトコル v1（クライアント間合意）
+
+オンライン対戦（B方式：ライブ状態ストリーミング）で、**クライアント同士が `GameEvent` / `PieceState` の `data` バイト列に載せる中身**の仕様。
+サーバー（VPS WebRTC リレー）は `data` を**解釈せず相手の同種チャンネルへ素通し**するため、この仕様は Rust 側の変更なしに改訂できる（バージョンは開始ハンドシェイクで交渉。後述）。
+
+設計の前提・経緯は本体メモリ `project-online-design` / `project-tetra-server` を参照。
+
+---
+
+## 0. 確定した方針（2026-06-08）
+
+- **符号化**: 手書き little-endian バイナリ（`DataView`）。固定レイアウト直接読み書き。wincode/varint 非依存・JSON 不使用。
+- **盤面補正**: 設置（Lock）ごとに**毎回フル盤面**を送る（自己修復的・デシンク不能）。別途 snapshot 不要。
+- **バージョン管理**: 開始ハンドシェイク（JSON 層の GameStart）で `protocolVersion` を**1回だけ**交渉。各フレームにバージョンバイトは持たせない。
+- 相手の rule（テト/ぷよどちらか）は対戦開始時に既知 → PieceState/GameEvent に rule 判別バイト不要。
+
+## 1. トランスポート（既存 / Rust 側）
+
+| Opcode | 名前 | チャンネル | 用途 |
+|---|---|---|---|
+| `0x06` | `GameEvent` | reliable | 離散イベント（順序保証・欠落不可） |
+| `0x07` | `PieceState` | unreliable | 落下ピース座標の高頻度ストリーム（最新優先・欠落OK） |
+
+サーバーは受信した `0x06`/`0x07` フレームを相手の同種チャンネルへ中身解釈せず転送する。
+開始/ルーム/再戦/rule通知などサーバーが発番する性質のものは **JSON 層（`payload/json.rs`）**で扱い、本サブプロトコルには含めない。
+
+## 2. 共通エンコード規約
+
+- すべて little-endian。
+- 整数型表記: `u8 / i8 / u16 / u32`。
+- `t:u32` = GameStart 相対ミリ秒。受信側は初回到着で `offset = localArrival − t` を確定し、以後 `t + offset + buffer` で再生（buffer ≈ 片道遅延 + 30〜60ms ジッタ）。
+- 盤面セルは 1 セル 1 バイト（後述）。
+
+## 3. PieceState（`0x07`・unreliable・30〜60Hz）
+
+サブタグ無し（単一用途）。色は載せない（テトは type で既知、ぷよは直近 Spawn で既知）。
+
+```
+共通先頭: t:u32
+
+テト本体（4B）:  type:u8(0–6)  x:i8  y:i8  rot:u8(0–3)
+  → フレーム計 8B
+
+ぷよ本体（3B）:  pivotX:i8  pivotY2:i8(= pivotY*2、x.5 刻みを整数化)  orient:u8(targetRot 0–3)
+  → フレーム計 7B
+```
+
+受信側は前後サンプルを線形補間して滑らかに描画する。
+
+## 4. GameEvent（`0x06`・reliable）
+
+先頭 1 バイト = **サブタグ**、その直後に共通 `t:u32`、以降ボディ。
+
+| サブタグ | 名前 | ボディ |
+|---|---|---|
+| `0x01` | Spawn | テト: `type:u8`, `nextCount:u8`, `next:u8×nextCount` ／ ぷよ: `pivotColor:u8`, `childColor:u8`, `nextCount:u8`, `next:(u8,u8)×nextCount` |
+| `0x02` | Lock | 盤面スナップショット（§5）。**設置ごと=定期補正を兼ねる** |
+| `0x03` | Clear | テト: `rows:u8`, `rowIdx:u8×rows`, `flags:u8`(bit0 B2B / bit1 PC / bit2 T-spin) ／ ぷよ: `chain:u8`, `clearedCells:u8`（演出キュー用・**任意**。盤面は Lock が権威） |
+| `0x04` | **GarbageSend ★ゲーム影響** | `amount:u16`, `holes:u8×amount`（各おじゃま単位の穴/列。テト=各行の穴列 0–9、ぷよ=各おじゃまの列） |
+| `0x05` | Hold | `heldType:u8`（テトのみ） |
+| `0x06` | PendingUpdate | `pending:u16`（相手の予告ゲージ表示用） |
+| `0x07` | GameOver | `result:u8`（0=topout/負, 1=clear/勝） |
+
+> **表示同期 vs ゲーム影響**: `0x04 GarbageSend` のみ受信側の自分のゲームに反映（予告に積む。相殺/着弾は受信側の既存ロジック）。他はすべて相手ミニ盤面への描画のみで自分のゲームに影響しない。
+
+## 5. 盤面スナップショット（Lock `0x02` ボディ）
+
+行優先（row 0 が最上段）で固定サイズの密配列。1 セル 1 バイト。
+
+- **テト**: `10 × 20`（COLS_COUNT × ROWS_COUNT）= 200B
+  - 値: `0xFF`=空 / `0–7`=Block.type（`0–6`=色, `7`=灰=おじゃま）
+- **ぷよ**: `6 × 17`（cols × (rows 12 + hiddenRows 5)）= 102B
+  - 値: `0`=空 / `1–5`=色 / `6`=おじゃま（`field[r][c]` の生値そのまま）
+
+設置は概ね 1 秒に 1 回なので帯域は問題なし。これが定期補正を兼ねるため、別途スナップショット用イベントは設けない。
+
+## 6. バージョン交渉
+
+GameStart（JSON 層・サーバー発番）に `protocolVersion`（この文書のメジャー = 1）を載せ、双方が一致を確認してから対戦開始。不一致なら互換なしとして対戦不可（将来：下位互換ネゴ）。
+
+## 7. 送信フック箇所（本体・ロジック不変の 1 行追加）
+
+- PieceState = `dropMino`/移動/回転後（throttle 30〜60Hz）
+- Spawn = `popMino`（tet）/ ぷよペア生成
+- Lock = `secureMino`（tet/board.js）/ ぷよ設置確定
+- Clear = `Scoring`/`checkLine`（tet）/ ぷよ連鎖
+- GarbageSend = `sendGarbage`（tet/garbage.js・puyo/ojama.js）送信時
+- GameOver = `gameOver()`
+
+受信側は相手用 Game/PuyoGame を「パペットモード」（重力/入力ループ無効）で保持し、受信データをフィールドへ代入して既存 `drawAll()` を呼ぶ。
