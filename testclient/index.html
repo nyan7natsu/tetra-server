@@ -53,14 +53,35 @@
 </fieldset>
 
 <fieldset>
-  <legend>中継テスト</legend>
-  <button id="sendGameEvent" disabled>GameEvent送信(reliable)</button>
-  <button id="sendPieceState" disabled>PieceState送信(unreliable)</button>
-  <button id="ping" disabled>Ping</button>
+  <legend>サブプロトコル中継テスト（v1）</legend>
+  <div class="row">
+    自分のrule:
+    <select id="myRule"><option value="tet">tet</option><option value="puyo">puyo</option></select>
+    相手のrule(復号用):
+    <select id="oppRule"><option value="tet">tet</option><option value="puyo">puyo</option></select>
+    <button id="resetClock" disabled>tをリセット(GameStart基準)</button>
+  </div>
+  <div class="row">
+    <b>PieceState(unreliable):</b>
+    <button id="sendPiece" disabled>落下ピース送信</button>
+    <button id="streamPiece" disabled>30Hzストリーム開始/停止</button>
+  </div>
+  <div class="row">
+    <b>GameEvent(reliable):</b>
+    <button id="evSpawn" disabled>Spawn</button>
+    <button id="evLock" disabled>Lock(盤面)</button>
+    <button id="evClear" disabled>Clear</button>
+    <button id="evGarbage" disabled>GarbageSend★</button>
+    <button id="evHold" disabled>Hold</button>
+    <button id="evPending" disabled>Pending</button>
+    <button id="evGameOver" disabled>GameOver</button>
+  </div>
+  <div class="row"><button id="ping" disabled>Ping</button></div>
 </fieldset>
 
 <div id="log"></div>
 
+<script src="subprotocol.js"></script>
 <script>
 const SIGNALING_URL = "ws://127.0.0.1:8080";
 const logEl = document.getElementById("log");
@@ -107,8 +128,9 @@ const pendingCandidates = [];
 let joinedRoomId = null;
 
 function setReady(connected) {
-  for (const id of ["getRooms", "ping", "sendGameEvent", "sendPieceState",
-                    "create", "joinByCode", "random", "cancelRandom"]) {
+  for (const id of ["getRooms", "ping", "create", "joinByCode", "random", "cancelRandom",
+                    "resetClock", "sendPiece", "streamPiece",
+                    "evSpawn", "evLock", "evClear", "evGarbage", "evHold", "evPending", "evGameOver"]) {
     $(id).disabled = !connected;
   }
 }
@@ -172,8 +194,26 @@ function handleIncoming(chName, bytes) {
     handleJsonResponse(JSON.parse(json));
     return;
   }
-  if (op === 0x06) { log(`← [中継] GameEvent 受信 / ${chName} / payload ${bytes.length - 1}B : "${new TextDecoder().decode(bytes.subarray(1))}"`, "relay"); return; }
-  if (op === 0x07) { log(`← [中継] PieceState 受信 / ${chName} / payload ${bytes.length - 1}B : "${new TextDecoder().decode(bytes.subarray(1))}"`, "relay"); return; }
+  if (op === 0x06) { // GameEvent
+    const oppRule = $("oppRule").value;
+    try {
+      const ev = Subprotocol.decodeGameEvent(bytes.subarray(1), oppRule);
+      log(`← [中継] GameEvent / ${bytes.length - 1}B / ${fmtEvent(ev)}`, "relay");
+    } catch (e) {
+      log(`← GameEvent 復号失敗(${oppRule}): ${e.message}`, "err");
+    }
+    return;
+  }
+  if (op === 0x07) { // PieceState
+    const oppRule = $("oppRule").value;
+    try {
+      const ps = Subprotocol.decodePieceState(bytes.subarray(1), oppRule);
+      log(`← [中継] PieceState / ${bytes.length - 1}B / ${fmtPiece(ps)}`, "relay");
+    } catch (e) {
+      log(`← PieceState 復号失敗(${oppRule}): ${e.message}`, "err");
+    }
+    return;
+  }
   log(`← 未知opcode 0x${op.toString(16)} (${chName})`, "err");
 }
 
@@ -286,20 +326,109 @@ function leaveRoom() {
   if (!joinedRoomId) return;
   reliable.send(buildJsonRequest({ type: "JSONLeaveRoomRequest", id: reqId(), roomId: joinedRoomId }));
 }
-let evtN = 0;
-function sendGameEvent() {
-  const text = new TextEncoder().encode(`evt#${++evtN}@${$("username").value}`);
-  const frame = new Uint8Array(1 + text.length); frame[0] = 0x06; frame.set(text, 1);
-  reliable.send(frame);
-  log(`→ GameEvent 送信 (reliable) "${new TextDecoder().decode(text)}"`, "info");
+// ─── サブプロトコル送信（仕様 v1）───
+let gameStartT = Date.now();          // GameStart 基準時刻
+const nowT = () => (Date.now() - gameStartT) & 0xffffffff; // 相対ms(u32)
+function resetClock() { gameStartT = Date.now(); log("t=0 (GameStart) にリセット", "info"); }
+
+// reliable/unreliable に opcode 付きフレームを送る
+function sendGameEvent(data) {
+  const f = new Uint8Array(1 + data.length); f[0] = 0x06; f.set(data, 1);
+  reliable.send(f);
 }
-let psN = 0;
-function sendPieceState() {
-  const text = new TextEncoder().encode(`piece#${++psN}@${$("username").value}`);
-  const frame = new Uint8Array(1 + text.length); frame[0] = 0x07; frame.set(text, 1);
-  unreliable.send(frame);
-  log(`→ PieceState 送信 (unreliable) "${new TextDecoder().decode(text)}"`, "info");
+function sendPieceFrame(data) {
+  const f = new Uint8Array(1 + data.length); f[0] = 0x07; f.set(data, 1);
+  unreliable.send(f);
 }
+
+// 表示ヘルパ
+function fmtPiece(p) {
+  return p.rule === "puyo"
+    ? `puyo piece t=${p.t} pivot(${p.pivotX},${p.pivotY}) orient=${p.orient}`
+    : `tet piece t=${p.t} type=${p.type} pos(${p.x},${p.y}) rot=${p.rot}`;
+}
+function fmtEvent(e) {
+  switch (e.kind) {
+    case "spawn": return e.rule === "puyo"
+      ? `Spawn(puyo) t=${e.t} pair(${e.pivotColor},${e.childColor}) next=${JSON.stringify(e.next)}`
+      : `Spawn(tet) t=${e.t} type=${e.type} next=[${e.next}]`;
+    case "lock": {
+      const filled = e.board.reduce((n, c) => n + (c !== (e.rule === "puyo" ? 0 : 0xff) ? 1 : 0), 0);
+      return `Lock(${e.rule}) t=${e.t} board=${e.board.length}B (${filled}セル充填)`;
+    }
+    case "clear": return e.rule === "puyo"
+      ? `Clear(puyo) t=${e.t} chain=${e.chain} cells=${e.clearedCells}`
+      : `Clear(tet) t=${e.t} rows=[${e.rowIdx}] b2b=${e.b2b} pc=${e.pc} tspin=${e.tspin}`;
+    case "garbage": return `★GarbageSend t=${e.t} amount=${e.amount} holes=[${e.holes}]`;
+    case "hold": return `Hold t=${e.t} type=${e.heldType}`;
+    case "pending": return `Pending t=${e.t} pending=${e.pending}`;
+    case "gameover": return `GameOver t=${e.t} result=${e.result}(${e.result ? "win/clear" : "topout"})`;
+    default: return `不明イベント tag=0x${(e.tag || 0).toString(16)}`;
+  }
+}
+
+// サンプル盤面生成（最下段におじゃま、その上にランダムな積み）
+function sampleTetBoard() {
+  const blocks = [];
+  for (let x = 0; x < 10; x++) if (x !== 4) blocks.push({ x, y: 19, type: 7 }); // 灰=おじゃま
+  for (let x = 0; x < 10; x++) if (Math.random() < 0.5) blocks.push({ x, y: 18, type: Math.floor(Math.random() * 7) });
+  return Subprotocol.buildTetBoard(blocks);
+}
+function samplePuyoField() {
+  const f = Array.from({ length: 17 }, () => new Array(6).fill(0));
+  for (let c = 0; c < 6; c++) f[16][c] = (c % 2 === 0) ? 6 : (1 + Math.floor(Math.random() * 5));
+  for (let c = 0; c < 6; c++) if (Math.random() < 0.5) f[15][c] = 1 + Math.floor(Math.random() * 5);
+  return f;
+}
+
+function sendPiece() {
+  const t = nowT();
+  if ($("myRule").value === "puyo") {
+    const data = Subprotocol.encodePieceStatePuyo({ t, pivotX: 1 + Math.floor(Math.random() * 4), pivotY: -0.5, orient: Math.floor(Math.random() * 4) });
+    sendPieceFrame(data); log(`→ PieceState(puyo) ${data.length}B t=${t}`, "info");
+  } else {
+    const data = Subprotocol.encodePieceStateTet({ t, type: Math.floor(Math.random() * 7), x: 3, y: -2 + Math.floor(Math.random() * 20), rot: Math.floor(Math.random() * 4) });
+    sendPieceFrame(data); log(`→ PieceState(tet) ${data.length}B t=${t}`, "info");
+  }
+}
+let streamTimer = null;
+function toggleStream() {
+  if (streamTimer) { clearInterval(streamTimer); streamTimer = null; log("ストリーム停止", "info"); return; }
+  streamTimer = setInterval(sendPiece, 33); // ~30Hz
+  log("30Hz ストリーム開始（再度押すと停止）", "ok");
+}
+function evSpawn() {
+  const t = nowT();
+  const data = $("myRule").value === "puyo"
+    ? Subprotocol.encodeSpawnPuyo({ t, pivotColor: 1 + Math.floor(Math.random() * 5), childColor: 1 + Math.floor(Math.random() * 5), next: [[1, 2], [3, 4], [5, 1]] })
+    : Subprotocol.encodeSpawnTet({ t, type: Math.floor(Math.random() * 7), next: [0, 1, 2, 3, 4] });
+  sendGameEvent(data); log(`→ Spawn(${$("myRule").value}) ${data.length}B`, "info");
+}
+function evLock() {
+  const t = nowT();
+  const data = $("myRule").value === "puyo"
+    ? Subprotocol.encodeLockPuyo({ t, board: Subprotocol.buildPuyoBoard(samplePuyoField()) })
+    : Subprotocol.encodeLockTet({ t, board: sampleTetBoard() });
+  sendGameEvent(data); log(`→ Lock(${$("myRule").value}) ${data.length}B`, "info");
+}
+function evClear() {
+  const t = nowT();
+  const data = $("myRule").value === "puyo"
+    ? Subprotocol.encodeClearPuyo({ t, chain: 3, clearedCells: 12 })
+    : Subprotocol.encodeClearTet({ t, rowIdx: [18, 19], flags: 1 | 4 });
+  sendGameEvent(data); log(`→ Clear(${$("myRule").value}) ${data.length}B`, "info");
+}
+function evGarbage() {
+  const t = nowT();
+  const amount = 1 + Math.floor(Math.random() * 6);
+  const holes = Array.from({ length: amount }, () => Math.floor(Math.random() * 10));
+  const data = Subprotocol.encodeGarbage({ t, amount, holes });
+  sendGameEvent(data); log(`→ ★GarbageSend ${data.length}B amount=${amount} holes=[${holes}]`, "info");
+}
+function evHold() { const t = nowT(); sendGameEvent(Subprotocol.encodeHold({ t, heldType: Math.floor(Math.random() * 7) })); log("→ Hold", "info"); }
+function evPending() { const t = nowT(); sendGameEvent(Subprotocol.encodePending({ t, pending: Math.floor(Math.random() * 20) })); log("→ Pending", "info"); }
+function evGameOver() { const t = nowT(); sendGameEvent(Subprotocol.encodeGameOver({ t, result: Math.round(Math.random()) })); log("→ GameOver", "info"); }
+
 function sendPing() {
   const buf = new Uint8Array(1 + 16); buf[0] = 0x01; crypto.getRandomValues(buf.subarray(1));
   reliable.send(buf); log("→ Ping(0x01) 送信", "info");
@@ -313,8 +442,16 @@ $("random").onclick = randomMatch;
 $("cancelRandom").onclick = cancelRandom;
 $("join").onclick = joinRoom;
 $("leave").onclick = leaveRoom;
-$("sendGameEvent").onclick = sendGameEvent;
-$("sendPieceState").onclick = sendPieceState;
+$("resetClock").onclick = resetClock;
+$("sendPiece").onclick = sendPiece;
+$("streamPiece").onclick = toggleStream;
+$("evSpawn").onclick = evSpawn;
+$("evLock").onclick = evLock;
+$("evClear").onclick = evClear;
+$("evGarbage").onclick = evGarbage;
+$("evHold").onclick = evHold;
+$("evPending").onclick = evPending;
+$("evGameOver").onclick = evGameOver;
 $("ping").onclick = sendPing;
 </script>
 </body>

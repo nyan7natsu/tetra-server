@@ -67,12 +67,14 @@
 
 行優先（row 0 が最上段）で固定サイズの密配列。1 セル 1 バイト。
 
-- **テト**: `10 × 20`（COLS_COUNT × ROWS_COUNT）= 200B
-  - 値: `0xFF`=空 / `0–7`=Block.type（`0–6`=色, `7`=灰=おじゃま）
+- **テト**: `10 × 40` = **400B**。可視 20 行（ROWS_COUNT）＋**上方バッファ 20 行**。
+  - 行マッピング: 盤面行 `r` ↔ エンジン座標 `y = r − 20`。`r=0` が最上段（`y=−20`）、`r=20` が可視最上段（`y=0`）。
+  - 値: `0xFF`=空 / `0–7`=Block.type（`0–6`=色, `7`=灰=おじゃま）。
+  - **上方バッファを含める理由**: おじゃまがせり上がると `applyGarbage`（tet/garbage.js）が既存ブロック全てを `block.y -= 1` で押し上げ、スタックが `y<0`（フィールド上端より上）へはみ出す。これらは消去で降りてくると再び見える＆描画も上端半行（`VISIBLE_EXTRA_ROW_RATIO=0.5`）を表示するため、可視 20 行のみでは取りこぼす。バッファ外（`y<−20`、実質トップアウト＝GameOver）に達したブロックのみ破棄。
 - **ぷよ**: `6 × 17`（cols × (rows 12 + hiddenRows 5)）= 102B
-  - 値: `0`=空 / `1–5`=色 / `6`=おじゃま（`field[r][c]` の生値そのまま）
+  - 値: `0`=空 / `1–5`=色 / `6`=おじゃま（`field[r][c]` の生値そのまま。隠し 5 行を内包するので追加バッファ不要）。
 
-設置は概ね 1 秒に 1 回なので帯域は問題なし。これが定期補正を兼ねるため、別途スナップショット用イベントは設けない。
+設置は概ね 1 秒に 1 回なので 400B/102B でも帯域は問題なし。これが定期補正を兼ねるため、別途スナップショット用イベントは設けない。
 
 ## 6. バージョン交渉
 
@@ -88,3 +90,13 @@ GameStart（JSON 層・サーバー発番）に `protocolVersion`（この文書
 - GameOver = `gameOver()`
 
 受信側は相手用 Game/PuyoGame を「パペットモード」（重力/入力ループ無効）で保持し、受信データをフィールドへ代入して既存 `drawAll()` を呼ぶ。
+
+## 8. リファレンス実装
+
+- **コーデック**: `tetra-server/testclient/subprotocol.js`（クラシック script・依存なし・グローバル `Subprotocol`）。
+  この仕様の encode/decode を全フレーム分実装した正準実装。本体(TETLABO)へはこのファイルをそのまま流用して `src/online/` 等へ配置する想定（step5）。
+  - PieceState: `encodePieceStateTet/Puyo`, `decodePieceState(data, rule)`
+  - GameEvent: `encodeSpawnTet/Puyo`, `encodeLockTet/Puyo`, `encodeClearTet/Puyo`, `encodeGarbage`, `encodeHold`, `encodePending`, `encodeGameOver`, `decodeGameEvent(data, rule)`
+  - 盤面ビルダ: `buildTetBoard(blocks)`（field.blocks → 400B、上方バッファ込み）, `buildPuyoBoard(field)`（17×6 → 102B）／逆変換 `tetBoardToBlocks(board)`（y は実座標で復元・負yブロック保持）, `puyoBoardToField(board)`
+  - 各 encode は **opcode を除いた data 部**を返す。呼び出し側が先頭に `0x06`/`0x07` を付けて該当チャンネルへ送る。
+- **テストクライアント**: `tetra-server/testclient/index.html` がこのコーデックを使用。2タブで接続→同室化後、tet/ぷよを切替えて各フレームを送信し、相手タブが復号して人間可読表示する（リレー越しの実バイト送受信を検証可能）。「自分のrule」=送信エンコード、「相手のrule」=受信デコード。
