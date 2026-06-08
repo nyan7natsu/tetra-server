@@ -30,10 +30,9 @@ macro_rules! jsend {
 pub async fn handle_reliable_connection(
     dc: Arc<webrtc::data_channel::RTCDataChannel>,
     game: Arc<Mutex<Game>>,
+    id: uuid::Uuid,
 ) -> () {
     let dc_clone = Arc::clone(&dc);
-
-    let id = uuid::Uuid::new_v4();
 
     game.lock()
         .await
@@ -412,10 +411,9 @@ pub async fn handle_reliable_connection(
 pub async fn handle_unreliable_connection(
     dc: Arc<webrtc::data_channel::RTCDataChannel>,
     game: Arc<Mutex<Game>>,
+    id: uuid::Uuid,
 ) -> () {
     let dc_clone = Arc::clone(&dc);
-
-    let id = uuid::Uuid::new_v4();
 
     game.lock()
         .await

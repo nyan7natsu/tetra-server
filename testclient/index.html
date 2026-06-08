@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>tetra-server P0 接続テストクライアント</title>
+<style>
+  body { font-family: monospace; margin: 1rem; background:#111; color:#ddd; }
+  h1 { font-size: 1.1rem; }
+  #log { white-space: pre-wrap; border:1px solid #444; padding:.5rem; height:60vh; overflow:auto; }
+  .ok { color:#4ec94e; } .err { color:#ff6b6b; } .info { color:#7fb3ff; }
+  button { padding:.4rem .8rem; margin-bottom:.5rem; }
+</style>
+</head>
+<body>
+<h1>tetra-server P0 接続テスト（クライアント=Offer側）</h1>
+<p>サーバー(<code>cargo run</code>)を起動してから「接続」を押してください。
+両チャンネル(reliable-main / unreliable-main)が開いたら成功。サーバー側ログに
+同一 player_id で「🎉 通信準備完了！」が1回出ることを確認します。</p>
+<button id="connect">接続</button>
+<button id="ping">Ping送信(任意)</button>
+<div id="log"></div>
+
+<script>
+const SIGNALING_URL = "ws://127.0.0.1:8080";
+const logEl = document.getElementById("log");
+function log(msg, cls = "") {
+  const t = new Date().toISOString().substr(11, 12);
+  logEl.innerHTML += `<span class="${cls}">[${t}] ${msg}</span>\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+let pc, ws, reliable, unreliable;
+let remoteSet = false;
+const pendingCandidates = [];
+
+async function connect() {
+  remoteSet = false;
+  pendingCandidates.length = 0;
+
+  ws = new WebSocket(SIGNALING_URL);
+  ws.onopen = () => log("WebSocket 接続OK → PeerConnection を作成", "info");
+  ws.onerror = (e) => log("WebSocket エラー: " + e.message, "err");
+  ws.onclose = () => log("WebSocket クローズ", "info");
+
+  ws.onmessage = async (ev) => {
+    const sig = JSON.parse(ev.data);
+    if (sig.type === "answer") {
+      log("← Answer 受信。setRemoteDescription", "info");
+      await pc.setRemoteDescription({ type: "answer", sdp: sig.sdp });
+      remoteSet = true;
+      // 保留していた候補を流し込む
+      for (const c of pendingCandidates) await addCandidate(c);
+      pendingCandidates.length = 0;
+    } else if (sig.type === "candidate") {
+      const cand = {
+        candidate: sig.candidate,
+        sdpMid: sig.sdp_mid,
+        sdpMLineIndex: sig.sdp_m_line_index,
+      };
+      if (remoteSet) await addCandidate(cand);
+      else pendingCandidates.push(cand);
+    }
+  };
+
+  ws.onopen = async () => {
+    log("WebSocket 接続OK", "info");
+    pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+
+    pc.oniceconnectionstatechange = () =>
+      log("ICE state: " + pc.iceConnectionState, "info");
+    pc.onconnectionstatechange = () =>
+      log("PC state: " + pc.connectionState, "info");
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        ws.send(JSON.stringify({
+          type: "candidate",
+          candidate: e.candidate.candidate,
+          sdp_mid: e.candidate.sdpMid,
+          sdp_m_line_index: e.candidate.sdpMLineIndex,
+        }));
+      }
+    };
+
+    // ★ サーバーの on_data_channel を2回発火させるため、Offer前に2本作る
+    reliable = pc.createDataChannel("reliable-main", { ordered: true });
+    unreliable = pc.createDataChannel("unreliable-main", {
+      ordered: false,
+      maxRetransmits: 0,
+    });
+    wireChannel(reliable, "reliable-main");
+    wireChannel(unreliable, "unreliable-main");
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
+    log("→ Offer 送信（reliable-main / unreliable-main を含む）", "info");
+  };
+}
+
+let openCount = 0;
+function wireChannel(ch, name) {
+  ch.onopen = () => {
+    openCount++;
+    log(`✅ DataChannel "${name}" OPEN (${openCount}/2)`, "ok");
+    if (openCount === 2)
+      log("🎉 両チャンネル確立！サーバーログで同一 player_id を確認してください。", "ok");
+  };
+  ch.onclose = () => log(`DataChannel "${name}" CLOSE`, "info");
+  ch.onmessage = (e) =>
+    log(`← "${name}" メッセージ受信 (${e.data.byteLength ?? e.data.length} bytes)`, "info");
+}
+
+async function addCandidate(cand) {
+  try { await pc.addIceCandidate(cand); }
+  catch (e) { log("addIceCandidate 失敗: " + e.message, "err"); }
+}
+
+// 任意：reliable で Ping(0x01) を送ってサーバーの Pong を確認する
+function sendPing() {
+  if (!reliable || reliable.readyState !== "open") {
+    log("reliable がまだ open ではありません", "err");
+    return;
+  }
+  // Opcode 0x01 (Ping) + UuidBytes(16) を wincode で送る想定。
+  // ここでは 0x01 + 16バイトのダミーUUID を送る（サーバーが Pong を返せば往復OK）。
+  const buf = new Uint8Array(1 + 16);
+  buf[0] = 0x01;
+  crypto.getRandomValues(buf.subarray(1));
+  reliable.send(buf);
+  log("→ reliable に Ping(0x01)+16byte を送信", "info");
+}
+
+document.getElementById("connect").onclick = connect;
+document.getElementById("ping").onclick = sendPing;
+</script>
+</body>
+</html>
