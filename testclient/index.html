@@ -2,22 +2,63 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8" />
-<title>tetra-server P0 接続テストクライアント</title>
+<title>tetra-server 中継テストクライアント</title>
 <style>
   body { font-family: monospace; margin: 1rem; background:#111; color:#ddd; }
-  h1 { font-size: 1.1rem; }
-  #log { white-space: pre-wrap; border:1px solid #444; padding:.5rem; height:60vh; overflow:auto; }
-  .ok { color:#4ec94e; } .err { color:#ff6b6b; } .info { color:#7fb3ff; }
-  button { padding:.4rem .8rem; margin-bottom:.5rem; }
+  h1 { font-size: 1.05rem; }
+  #log { white-space: pre-wrap; border:1px solid #444; padding:.5rem; height:48vh; overflow:auto; }
+  .ok { color:#4ec94e; } .err { color:#ff6b6b; } .info { color:#7fb3ff; } .relay { color:#ffd24e; font-weight:bold; }
+  button { padding:.35rem .7rem; margin:0 .3rem .4rem 0; }
+  input, select { background:#222; color:#ddd; border:1px solid #555; padding:.25rem; }
+  .row { margin-bottom:.4rem; }
+  fieldset { border:1px solid #444; margin-bottom:.5rem; }
 </style>
 </head>
 <body>
-<h1>tetra-server P0 接続テスト（クライアント=Offer側）</h1>
-<p>サーバー(<code>cargo run</code>)を起動してから「接続」を押してください。
-両チャンネル(reliable-main / unreliable-main)が開いたら成功。サーバー側ログに
-同一 player_id で「🎉 通信準備完了！」が1回出ることを確認します。</p>
-<button id="connect">接続</button>
-<button id="ping">Ping送信(任意)</button>
+<h1>tetra-server マッチングテスト（step3: 作成 / コード参加 / ランダムマッチ ＋ 中継）</h1>
+<p>このページを<b>2つのタブ</b>で開いて検証します。<br>
+・<b>コード参加</b>: タブA=接続→ルーム作成（コード表示）／タブB=接続→そのコードで参加<br>
+・<b>ランダムマッチ</b>: 両タブで接続→ランダムマッチ（先の方は待機→2人目で成立）<br>
+2人が同室になると双方に「ルーム更新通知(相手判明)」が出ます。その後 GameEvent/PieceState 送信で中継を確認。</p>
+
+<fieldset>
+  <legend>接続</legend>
+  <div class="row">
+    <button id="connect">①接続</button>
+    username: <input id="username" value="player" size="8" />
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>マッチング</legend>
+  <div class="row">
+    ルーム名: <input id="roomName" value="myroom" size="8" />
+    <button id="create" disabled>ルーム作成</button>
+    <span id="myCode" class="ok"></span>
+  </div>
+  <div class="row">
+    コード: <input id="codeInput" size="8" placeholder="ABC123" />
+    <button id="joinByCode" disabled>コードで参加</button>
+  </div>
+  <div class="row">
+    <button id="random" disabled>ランダムマッチ</button>
+    <button id="cancelRandom" disabled>キャンセル</button>
+    <button id="leave" disabled>退出</button>
+  </div>
+  <div class="row">
+    <button id="getRooms" disabled>ルーム一覧取得(任意)</button>
+    <select id="roomSelect" disabled></select>
+    <button id="join" disabled>選択ルームに参加</button>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>中継テスト</legend>
+  <button id="sendGameEvent" disabled>GameEvent送信(reliable)</button>
+  <button id="sendPieceState" disabled>PieceState送信(unreliable)</button>
+  <button id="ping" disabled>Ping</button>
+</fieldset>
+
 <div id="log"></div>
 
 <script>
@@ -28,113 +69,253 @@ function log(msg, cls = "") {
   logEl.innerHTML += `<span class="${cls}">[${t}] ${msg}</span>\n`;
   logEl.scrollTop = logEl.scrollHeight;
 }
+const $ = (id) => document.getElementById(id);
 
+// ---- wincode (varint, LittleEndian) ----
+function varintU64Encode(n) {
+  if (n <= 250) return [n];
+  if (n <= 0xffff) return [251, n & 0xff, (n >> 8) & 0xff];
+  if (n <= 0xffffffff) return [252, n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >>> 24) & 0xff];
+  const out = [253]; let v = BigInt(n);
+  for (let i = 0; i < 8; i++) { out.push(Number(v & 0xffn)); v >>= 8n; }
+  return out;
+}
+function varintU64Decode(bytes, off) {
+  const tag = bytes[off];
+  if (tag <= 250) return [tag, off + 1];
+  if (tag === 251) return [bytes[off+1] | (bytes[off+2] << 8), off + 3];
+  if (tag === 252) return [(bytes[off+1] | (bytes[off+2]<<8) | (bytes[off+3]<<16) | (bytes[off+4]<<24)) >>> 0, off + 5];
+  if (tag === 253) { let v = 0n; for (let i = 0; i < 8; i++) v |= BigInt(bytes[off+1+i]) << BigInt(8*i); return [Number(v), off + 9]; }
+  throw new Error("unsupported varint tag " + tag);
+}
+// JSONRequest フレーム: [0x03] ++ varint(len) ++ utf8(json)
+function buildJsonRequest(msgObj) {
+  const utf8 = new TextEncoder().encode(JSON.stringify(msgObj));
+  const lenBytes = varintU64Encode(utf8.length);
+  const frame = new Uint8Array(1 + lenBytes.length + utf8.length);
+  frame[0] = 0x03;
+  frame.set(lenBytes, 1);
+  frame.set(utf8, 1 + lenBytes.length);
+  return frame;
+}
+const reqId = () => crypto.randomUUID();
+
+// ---- state ----
 let pc, ws, reliable, unreliable;
-let remoteSet = false;
+let remoteSet = false, openCount = 0;
 const pendingCandidates = [];
+let joinedRoomId = null;
 
-async function connect() {
-  remoteSet = false;
-  pendingCandidates.length = 0;
+function setReady(connected) {
+  for (const id of ["getRooms", "ping", "sendGameEvent", "sendPieceState",
+                    "create", "joinByCode", "random", "cancelRandom"]) {
+    $(id).disabled = !connected;
+  }
+}
 
+function connect() {
+  remoteSet = false; openCount = 0; pendingCandidates.length = 0;
   ws = new WebSocket(SIGNALING_URL);
-  ws.onopen = () => log("WebSocket 接続OK → PeerConnection を作成", "info");
-  ws.onerror = (e) => log("WebSocket エラー: " + e.message, "err");
+  ws.onerror = () => log("WebSocket エラー", "err");
   ws.onclose = () => log("WebSocket クローズ", "info");
-
   ws.onmessage = async (ev) => {
     const sig = JSON.parse(ev.data);
     if (sig.type === "answer") {
-      log("← Answer 受信。setRemoteDescription", "info");
       await pc.setRemoteDescription({ type: "answer", sdp: sig.sdp });
       remoteSet = true;
-      // 保留していた候補を流し込む
       for (const c of pendingCandidates) await addCandidate(c);
       pendingCandidates.length = 0;
     } else if (sig.type === "candidate") {
-      const cand = {
-        candidate: sig.candidate,
-        sdpMid: sig.sdp_mid,
-        sdpMLineIndex: sig.sdp_m_line_index,
-      };
-      if (remoteSet) await addCandidate(cand);
-      else pendingCandidates.push(cand);
+      const cand = { candidate: sig.candidate, sdpMid: sig.sdp_mid, sdpMLineIndex: sig.sdp_m_line_index };
+      if (remoteSet) await addCandidate(cand); else pendingCandidates.push(cand);
     }
   };
-
   ws.onopen = async () => {
     log("WebSocket 接続OK", "info");
-    pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
-
-    pc.oniceconnectionstatechange = () =>
-      log("ICE state: " + pc.iceConnectionState, "info");
-    pc.onconnectionstatechange = () =>
-      log("PC state: " + pc.connectionState, "info");
-
+    pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+    pc.oniceconnectionstatechange = () => log("ICE: " + pc.iceConnectionState, "info");
     pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        ws.send(JSON.stringify({
-          type: "candidate",
-          candidate: e.candidate.candidate,
-          sdp_mid: e.candidate.sdpMid,
-          sdp_m_line_index: e.candidate.sdpMLineIndex,
-        }));
-      }
+      if (e.candidate) ws.send(JSON.stringify({
+        type: "candidate", candidate: e.candidate.candidate,
+        sdp_mid: e.candidate.sdpMid, sdp_m_line_index: e.candidate.sdpMLineIndex,
+      }));
     };
-
-    // ★ サーバーの on_data_channel を2回発火させるため、Offer前に2本作る
     reliable = pc.createDataChannel("reliable-main", { ordered: true });
-    unreliable = pc.createDataChannel("unreliable-main", {
-      ordered: false,
-      maxRetransmits: 0,
-    });
+    unreliable = pc.createDataChannel("unreliable-main", { ordered: false, maxRetransmits: 0 });
+    reliable.binaryType = "arraybuffer";
+    unreliable.binaryType = "arraybuffer";
     wireChannel(reliable, "reliable-main");
     wireChannel(unreliable, "unreliable-main");
-
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
-    log("→ Offer 送信（reliable-main / unreliable-main を含む）", "info");
+    log("→ Offer 送信", "info");
   };
 }
 
-let openCount = 0;
 function wireChannel(ch, name) {
   ch.onopen = () => {
     openCount++;
-    log(`✅ DataChannel "${name}" OPEN (${openCount}/2)`, "ok");
-    if (openCount === 2)
-      log("🎉 両チャンネル確立！サーバーログで同一 player_id を確認してください。", "ok");
+    log(`✅ "${name}" OPEN (${openCount}/2)`, "ok");
+    if (openCount === 2) { log("🎉 両チャンネル確立。ルーム取得へ。", "ok"); setReady(true); }
   };
-  ch.onclose = () => log(`DataChannel "${name}" CLOSE`, "info");
-  ch.onmessage = (e) =>
-    log(`← "${name}" メッセージ受信 (${e.data.byteLength ?? e.data.length} bytes)`, "info");
+  ch.onclose = () => log(`"${name}" CLOSE`, "info");
+  ch.onmessage = (e) => handleIncoming(name, new Uint8Array(e.data));
 }
 
-async function addCandidate(cand) {
-  try { await pc.addIceCandidate(cand); }
-  catch (e) { log("addIceCandidate 失敗: " + e.message, "err"); }
-}
-
-// 任意：reliable で Ping(0x01) を送ってサーバーの Pong を確認する
-function sendPing() {
-  if (!reliable || reliable.readyState !== "open") {
-    log("reliable がまだ open ではありません", "err");
+function handleIncoming(chName, bytes) {
+  const op = bytes[0];
+  if (op === 0x02) { log(`← Pong (${chName})`, "info"); return; }
+  if (op === 0x04) { // JSONResponse
+    const [len, off] = varintU64Decode(bytes, 1);
+    const json = new TextDecoder().decode(bytes.subarray(off, off + len));
+    handleJsonResponse(JSON.parse(json));
     return;
   }
-  // Opcode 0x01 (Ping) + UuidBytes(16) を wincode で送る想定。
-  // ここでは 0x01 + 16バイトのダミーUUID を送る（サーバーが Pong を返せば往復OK）。
-  const buf = new Uint8Array(1 + 16);
-  buf[0] = 0x01;
-  crypto.getRandomValues(buf.subarray(1));
-  reliable.send(buf);
-  log("→ reliable に Ping(0x01)+16byte を送信", "info");
+  if (op === 0x06) { log(`← [中継] GameEvent 受信 / ${chName} / payload ${bytes.length - 1}B : "${new TextDecoder().decode(bytes.subarray(1))}"`, "relay"); return; }
+  if (op === 0x07) { log(`← [中継] PieceState 受信 / ${chName} / payload ${bytes.length - 1}B : "${new TextDecoder().decode(bytes.subarray(1))}"`, "relay"); return; }
+  log(`← 未知opcode 0x${op.toString(16)} (${chName})`, "err");
 }
 
-document.getElementById("connect").onclick = connect;
-document.getElementById("ping").onclick = sendPing;
+function handleJsonResponse(msg) {
+  switch (msg.type) {
+    case "JSONGetRoomsResponse": {
+      const sel = $("roomSelect");
+      sel.innerHTML = "";
+      msg.rooms.forEach((r) => {
+        const opt = document.createElement("option");
+        opt.value = r.id;
+        opt.textContent = `${r.roomName} (${r.players}/${r.maxPlayers}) ${r.id.slice(0,8)}`;
+        sel.appendChild(opt);
+      });
+      sel.disabled = msg.rooms.length === 0;
+      $("join").disabled = msg.rooms.length === 0;
+      log(`← ルーム一覧 ${msg.rooms.length}件`, "info");
+      break;
+    }
+    case "JSONJoinRoomResponse":
+      if (msg.success) {
+        joinedRoomId = $("roomSelect").value;
+        $("leave").disabled = false;
+        log(`✅ ルーム参加成功 ${joinedRoomId.slice(0,8)}`, "ok");
+      } else log(`参加失敗: ${msg.message}`, "err");
+      break;
+    case "JSONCreateRoomResponse":
+      joinedRoomId = msg.roomId;
+      $("leave").disabled = false;
+      $("myCode").textContent = ` ← コード: ${msg.code}（相手に伝える）`;
+      log(`✅ ルーム作成 room_id=${msg.roomId.slice(0,8)} コード=${msg.code}。相手のコード参加待ち。`, "ok");
+      break;
+    case "JSONJoinByCodeResponse":
+      if (msg.success) {
+        joinedRoomId = msg.roomId;
+        $("leave").disabled = false;
+        log(`✅ コード参加成功 room_id=${(msg.roomId||"").slice(0,8)}`, "ok");
+      } else log(`コード参加失敗: ${msg.message}`, "err");
+      break;
+    case "JSONJoinRandomMatchResponse":
+      if (msg.matched) {
+        joinedRoomId = msg.roomId;
+        $("leave").disabled = false; $("cancelRandom").disabled = true;
+        log(`✅ ランダムマッチ成立 room_id=${msg.roomId.slice(0,8)}`, "ok");
+      } else {
+        log(`⏳ ランダムマッチ待機中…（相手が来るのを待っています）`, "info");
+      }
+      break;
+    case "JSONCancelRandomMatchResponse":
+      log(`ランダムマッチ キャンセル: ${msg.success ? "OK" : "(待機列に居ませんでした)"}`, "info");
+      break;
+    case "JSONRoomInfoNotification": {
+      const others = msg.players.filter((p) => p[1] !== ($("username").value));
+      joinedRoomId = msg.roomId;
+      $("leave").disabled = false; $("cancelRandom").disabled = true;
+      const names = msg.players.map((p) => `${p[1]}(${p[0].slice(0,8)})`).join(", ");
+      log(`🔔 ルーム更新通知: "${msg.roomName}" ${msg.players.length}/${msg.maxPlayers}人 [${names}]`, "relay");
+      if (msg.players.length >= 2)
+        log(`→ 相手が揃いました。GameEvent/PieceState 送信で中継を確認できます。`, "ok");
+      break;
+    }
+    case "JSONLeaveRoomResponse":
+      log(`退出: ${msg.success ? "OK" : msg.message}`, "info");
+      joinedRoomId = null; $("leave").disabled = true; $("myCode").textContent = "";
+      break;
+    default:
+      log("← JSON: " + JSON.stringify(msg), "info");
+  }
+}
+
+async function addCandidate(c) {
+  try { await pc.addIceCandidate(c); } catch (e) { log("addIceCandidate 失敗: " + e.message, "err"); }
+}
+
+// ---- actions ----
+function getRooms() { reliable.send(buildJsonRequest({ type: "JSONGetRoomsRequest", id: reqId() })); }
+function createRoom() {
+  reliable.send(buildJsonRequest({
+    type: "JSONCreateRoomRequest", id: reqId(),
+    roomName: $("roomName").value || "myroom", maxPlayers: 2,
+    password: null, tags: [], username: $("username").value || "player",
+  }));
+}
+function joinByCode() {
+  const code = $("codeInput").value.trim().toUpperCase();
+  if (!code) return log("コード未入力", "err");
+  reliable.send(buildJsonRequest({
+    type: "JSONJoinByCodeRequest", id: reqId(),
+    code, password: null, username: $("username").value || "player",
+  }));
+}
+function randomMatch() {
+  $("cancelRandom").disabled = false;
+  reliable.send(buildJsonRequest({
+    type: "JSONJoinRandomMatchRequest", id: reqId(), username: $("username").value || "player",
+  }));
+}
+function cancelRandom() {
+  reliable.send(buildJsonRequest({ type: "JSONCancelRandomMatchRequest", id: reqId() }));
+}
+function joinRoom() {
+  const roomId = $("roomSelect").value;
+  if (!roomId) return log("ルーム未選択", "err");
+  reliable.send(buildJsonRequest({
+    type: "JSONJoinRoomRequest", id: reqId(),
+    roomId, password: null, username: $("username").value || "player",
+  }));
+}
+function leaveRoom() {
+  if (!joinedRoomId) return;
+  reliable.send(buildJsonRequest({ type: "JSONLeaveRoomRequest", id: reqId(), roomId: joinedRoomId }));
+}
+let evtN = 0;
+function sendGameEvent() {
+  const text = new TextEncoder().encode(`evt#${++evtN}@${$("username").value}`);
+  const frame = new Uint8Array(1 + text.length); frame[0] = 0x06; frame.set(text, 1);
+  reliable.send(frame);
+  log(`→ GameEvent 送信 (reliable) "${new TextDecoder().decode(text)}"`, "info");
+}
+let psN = 0;
+function sendPieceState() {
+  const text = new TextEncoder().encode(`piece#${++psN}@${$("username").value}`);
+  const frame = new Uint8Array(1 + text.length); frame[0] = 0x07; frame.set(text, 1);
+  unreliable.send(frame);
+  log(`→ PieceState 送信 (unreliable) "${new TextDecoder().decode(text)}"`, "info");
+}
+function sendPing() {
+  const buf = new Uint8Array(1 + 16); buf[0] = 0x01; crypto.getRandomValues(buf.subarray(1));
+  reliable.send(buf); log("→ Ping(0x01) 送信", "info");
+}
+
+$("connect").onclick = connect;
+$("getRooms").onclick = getRooms;
+$("create").onclick = createRoom;
+$("joinByCode").onclick = joinByCode;
+$("random").onclick = randomMatch;
+$("cancelRandom").onclick = cancelRandom;
+$("join").onclick = joinRoom;
+$("leave").onclick = leaveRoom;
+$("sendGameEvent").onclick = sendGameEvent;
+$("sendPieceState").onclick = sendPieceState;
+$("ping").onclick = sendPing;
 </script>
 </body>
 </html>
