@@ -117,10 +117,16 @@ json_message!(
         Pong, (id, Uuid);
         GetRoomsRequest, (id, Uuid);
         GetRoomsResponse, (id, Uuid), (rooms, Vec<ListRoomInfo>);
-        CreateRoomRequest, (id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>);
-        CreateRoomResponse, (id, Uuid), (room_id, Uuid);
+        CreateRoomRequest, (id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>), (username, String);
+        CreateRoomResponse, (id, Uuid), (room_id, Uuid), (code, String);
         JoinRoomRequest, (id, Uuid), (room_id, Uuid), (password, Option<String>), (username, String);
         JoinRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
+        JoinByCodeRequest, (id, Uuid), (code, String), (password, Option<String>), (username, String);
+        JoinByCodeResponse, (id, Uuid), (success, bool), (message, Option<String>), (room_id, Option<Uuid>);
+        JoinRandomMatchRequest, (id, Uuid), (username, String);
+        JoinRandomMatchResponse, (id, Uuid), (matched, bool), (room_id, Option<Uuid>);
+        CancelRandomMatchRequest, (id, Uuid);
+        CancelRandomMatchResponse, (id, Uuid), (success, bool);
         LeaveRoomRequest, (id, Uuid), (room_id, Uuid);
         LeaveRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
         RoomUpdateRequest, (id, Uuid), (room_id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>);
@@ -195,5 +201,10 @@ schemas! {
         JSONRequest, 0x03, (data, String);
         JSONResponse, 0x04, (data, String);
         Close, 0x05;
+        // 対戦中の中継用。サーバーは中身を解釈せず、相手の同種チャンネルへフレームを素通しする。
+        // GameEvent  : reliable 経由（spawn/lock/clear/garbage/gameover/start など離散イベント）
+        // PieceState : unreliable 経由（落下ミノ座標・回転など高頻度ストリーム）
+        GameEvent, 0x06, (data, Vec<u8>);
+        PieceState, 0x07, (data, Vec<u8>);
     }
 }

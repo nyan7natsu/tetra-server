@@ -82,10 +82,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let game = Arc::new(Mutex::new(game::Game::default()));
 
-    game.lock()
-        .await
-        .new_room(uuid::Uuid::new_v4(), "TEST".to_string(), 2, None, vec![]);
-
     while let Ok((stream, _)) = listener.accept().await {
         nest!(game, api);
 

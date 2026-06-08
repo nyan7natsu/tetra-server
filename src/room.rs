@@ -38,4 +38,6 @@ pub struct Room {
     pub password: Option<String>,
     /// ルーム種別を表すタグ
     pub tags: Vec<RoomTag>,
+    /// 友人参加用の短いルームコード（UUIDの代わりに共有する）
+    pub code: String,
 }
