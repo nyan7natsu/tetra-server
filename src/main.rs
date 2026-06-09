@@ -1,5 +1,6 @@
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
+use std::env;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -35,6 +36,8 @@ macro_rules! nest {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenvy::dotenv().ok();
+
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();
@@ -61,7 +64,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting server...");
 
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    let ws_addr = env::var("WS_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    info!("Listening on {ws_addr}...");
+
+    let listener = TcpListener::bind(&ws_addr).await?;
 
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -149,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Data channel created: {dc_label}");
 
                     match dc_label.as_str() {
-                        connection::RELIABLE_CHANNEL_LABEL=> Box::pin(async move {
+                        connection::RELIABLE_CHANNEL_LABEL => Box::pin(async move {
                             nest!(game);
 
                             let _ = tokio::spawn(handle_reliable_connection(dc, game, player_id))

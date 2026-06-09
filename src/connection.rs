@@ -161,6 +161,7 @@ pub async fn handle_reliable_connection(
                             payload::JsonMessage::JSONPing(req) => {
                                 jsend!(dc_clone, JSONPong { id: req.id });
                             }
+
                             payload::JsonMessage::JSONGetRoomsRequest(req) => {
                                 let req_id = req.id;
                                 let game = game.lock().await;
@@ -182,6 +183,7 @@ pub async fn handle_reliable_connection(
 
                                 jsend!(dc_clone, JSONGetRoomsResponse { id: req_id, rooms });
                             }
+
                             payload::JsonMessage::JSONCreateRoomRequest(req) => {
                                 let req_id = req.id;
                                 let room_name = req.room_name;
@@ -225,6 +227,7 @@ pub async fn handle_reliable_connection(
                                     }
                                 );
                             }
+
                             payload::JsonMessage::JSONJoinRoomRequest(req) => {
                                 let req_id = req.id;
                                 let room_id = req.room_id;
@@ -384,7 +387,31 @@ pub async fn handle_reliable_connection(
                                         success
                                     }
                                 );
+
+                                let game = game.lock().await;
+
+                                for (pid, _) in &room.players {
+                                    if *pid != id {
+                                        if let Some(dc) = game.get_reliable_connection(pid) {
+                                            jsend!(
+                                                dc,
+                                                JSONRoomInfoNotification {
+                                                    room_id,
+                                                    room_name: room.room_name.clone(),
+                                                    players: room.players.clone(),
+                                                    max_players: room.max_players,
+                                                    tags: room
+                                                        .tags
+                                                        .iter()
+                                                        .map(|tag| *tag as u32)
+                                                        .collect(),
+                                                }
+                                            );
+                                        }
+                                    }
+                                }
                             }
+
                             payload::JsonMessage::JSONLeaveRoomRequest(req) => {
                                 let req_id = req.id;
                                 let room_id = req.room_id;
@@ -414,12 +441,13 @@ pub async fn handle_reliable_connection(
                                     notify_room(&game, room_id).await;
                                 }
                             }
+
                             payload::JsonMessage::JSONRoomUpdateRequest(req) => {
                                 let req_id = req.id;
                                 let room_id = req.room_id;
 
-                                let mut game = game.lock().await;
-                                let room = match game.rooms.get_mut(&room_id) {
+                                let mut game_mut = game.lock().await;
+                                let room = match game_mut.rooms.get_mut(&room_id) {
                                     Some(r) => r,
                                     None => {
                                         jsend!(
@@ -479,23 +507,39 @@ pub async fn handle_reliable_connection(
                                     Ok(())
                                 })();
 
-                                let resp = payload::JSONRoomUpdateResponse {
-                                    id: req_id,
-                                    success: update_result.is_ok(),
-                                    message: update_result.err(),
-                                };
-                                let body = payload::JsonMessage::JSONRoomUpdateResponse(resp)
-                                    .to_response_body()
-                                    .expect("Failed to build JSON response");
-                                let binary_resp = payload::wrap_with_opcode(
-                                    payload::Opcode::JSONResponsePayload,
-                                    body,
+                                jsend!(
+                                    dc_clone,
+                                    JSONRoomUpdateResponse {
+                                        id: req_id,
+                                        success: update_result.is_ok(),
+                                        message: update_result.err()
+                                    }
                                 );
 
-                                if let Err(e) = dc_clone.send(&Bytes::from(binary_resp)).await {
-                                    error!("Failed to send response: {e}");
+                                let game = game.lock().await;
+
+                                for (pid, _) in &room.players {
+                                    if *pid != id {
+                                        if let Some(dc) = game.get_reliable_connection(pid) {
+                                            jsend!(
+                                                dc,
+                                                JSONRoomInfoNotification {
+                                                    room_id,
+                                                    room_name: room.room_name.clone(),
+                                                    players: room.players.clone(),
+                                                    max_players: room.max_players,
+                                                    tags: room
+                                                        .tags
+                                                        .iter()
+                                                        .map(|tag| *tag as u32)
+                                                        .collect(),
+                                                }
+                                            );
+                                        }
+                                    }
                                 }
                             }
+
                             other => {
                                 info!("Unhandled JSON request: {other:?}");
                             }
