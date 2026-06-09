@@ -546,22 +546,31 @@ pub async fn handle_reliable_connection(
                     }
                     *state = crate::game::ConnectionState::Disconnected;
                     println!(
-                        "Disconnected player [{}]. Waiting for 30 seconds before removing their data...",
+                        "Disconnected player [{}]. Waiting for 5 seconds before removing their data...",
                         id
                     );
                 }
             }
 
-            sleep(Duration::from_secs(30)).await;
+            sleep(Duration::from_secs(5)).await;
 
-            let mut game = game.write().await;
-            if let Some(state) = game.get_connection_state(&id) {
-                if matches!(*state.lock().unwrap(), crate::game::ConnectionState::Disconnected) {
-                    game.remove_connection(&id).await;
-                    println!(
-                        "Removed player [{}] data after 30 seconds of disconnection.",
-                        id
-                    );
+            // 猶予後もまだ切断状態なら本当に削除し、残ったルームメンバーへ通知する。
+            // 通知に使う room_id は削除前に控える（削除後は経路表から消えて引けない）。
+            let (should_remove, room_id) = {
+                let game = game.read().await;
+                let still_disconnected = game
+                    .get_connection_state(&id)
+                    .map(|s| matches!(*s.lock().unwrap(), crate::game::ConnectionState::Disconnected))
+                    .unwrap_or(false);
+                (still_disconnected, game.room_of(&id))
+            };
+            if should_remove {
+                game.write().await.remove_connection(&id).await;
+                println!("Removed player [{id}] data after 5 seconds of disconnection.");
+                // 残ったプレイヤーへ更新後の一覧を通知（無人で部屋が消えていれば何もしない）。
+                // write ロックを解放してから呼ぶ（notify_room が内部で read ロックを取るため）。
+                if let Some(room_id) = room_id {
+                    notify_room(&game, room_id).await;
                 }
             }
         })
@@ -665,22 +674,31 @@ pub async fn handle_unreliable_connection(
                     }
                     *state = crate::game::ConnectionState::Disconnected;
                     println!(
-                        "Disconnected player [{}]. Waiting for 30 seconds before removing their data...",
+                        "Disconnected player [{}]. Waiting for 5 seconds before removing their data...",
                         id
                     );
                 }
             }
 
-            sleep(Duration::from_secs(30)).await;
+            sleep(Duration::from_secs(5)).await;
 
-            let mut game = game.write().await;
-            if let Some(state) = game.get_connection_state(&id) {
-                if matches!(*state.lock().unwrap(), crate::game::ConnectionState::Disconnected) {
-                    game.remove_connection(&id).await;
-                    println!(
-                        "Removed player [{}] data after 30 seconds of disconnection.",
-                        id
-                    );
+            // 猶予後もまだ切断状態なら本当に削除し、残ったルームメンバーへ通知する。
+            // 通知に使う room_id は削除前に控える（削除後は経路表から消えて引けない）。
+            let (should_remove, room_id) = {
+                let game = game.read().await;
+                let still_disconnected = game
+                    .get_connection_state(&id)
+                    .map(|s| matches!(*s.lock().unwrap(), crate::game::ConnectionState::Disconnected))
+                    .unwrap_or(false);
+                (still_disconnected, game.room_of(&id))
+            };
+            if should_remove {
+                game.write().await.remove_connection(&id).await;
+                println!("Removed player [{id}] data after 5 seconds of disconnection.");
+                // 残ったプレイヤーへ更新後の一覧を通知（無人で部屋が消えていれば何もしない）。
+                // write ロックを解放してから呼ぶ（notify_room が内部で read ロックを取るため）。
+                if let Some(room_id) = room_id {
+                    notify_room(&game, room_id).await;
                 }
             }
         })

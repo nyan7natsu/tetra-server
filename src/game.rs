@@ -220,6 +220,12 @@ impl Game {
         before != self.matchmaking_queue.len()
     }
 
+    /// プレイヤーの所属ルームを引く。切断削除の前にルームを控え、削除後に
+    /// 残ったメンバーへ通知するために使う（削除後は経路表から消えて引けなくなる）。
+    pub fn room_of(&self, player_id: &Uuid) -> Option<Uuid> {
+        self.player_rooms.get(player_id).copied()
+    }
+
     /// player -> room -> opponent を引く（1対1前提: 同ルームの自分以外のプレイヤー）。
     pub fn get_opponent(&self, player_id: &Uuid) -> Option<Uuid> {
         let room_id = self.player_rooms.get(player_id)?;
@@ -328,10 +334,13 @@ mod tests {
         // 双方向に相手を引ける
         assert_eq!(game.get_opponent(&owner), Some(guest));
         assert_eq!(game.get_opponent(&guest), Some(owner));
+        // 切断通知用に所属ルームも引ける
+        assert_eq!(game.room_of(&guest), Some(room_id));
 
-        // 退室すると経路が消える（中継先なし）
+        // 退室すると経路が消える（中継先なし／所属ルームも消える）
         game.leave_room(&guest);
         assert_eq!(game.get_opponent(&owner), None);
+        assert_eq!(game.room_of(&guest), None);
     }
 
     /// Issue #8 の核心: Game を RwLock で包むと「読み取りは並行・書き込みは排他」に
