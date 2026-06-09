@@ -58,10 +58,13 @@
 | `0x03` | Clear | テト: `rows:u8`, `rowIdx:u8×rows`, `flags:u8`(bit0 B2B / bit1 PC / bit2 T-spin) ／ ぷよ: `chain:u8`, `clearedCells:u8`（演出キュー用・**任意**。盤面は Lock が権威） |
 | `0x04` | **GarbageSend ★ゲーム影響** | `amount:u16`, `holes:u8×amount`（各おじゃま単位の穴/列。テト=各行の穴列 0–9、ぷよ=各おじゃまの列） |
 | `0x05` | Hold | `heldType:u8`（テトのみ） |
-| `0x06` | PendingUpdate | `pending:u16`（相手の予告ゲージ表示用） |
+| `0x06` | PendingUpdate | `ready:u16`, `unready:u16`（相手の予告ゲージ表示用・フェーズ別。ready=確定/降下可段, unready=猶予段。いずれも internal 非表示段は除外） |
 | `0x07` | GameOver | `result:u8`（0=topout/負, 1=clear/勝） |
+| `0x08` | **Control（開始/再戦合意）** | `action:u8`, `seed:u32`。`action`=`0x01 READY`（開始/再戦の準備完了。`seed`=共有シード素材）/`0x02 UNREADY`（準備取消・`seed` 未使用） |
 
 > **表示同期 vs ゲーム影響**: `0x04 GarbageSend` のみ受信側の自分のゲームに反映（予告に積む。相殺/着弾は受信側の既存ロジック）。他はすべて相手ミニ盤面への描画のみで自分のゲームに影響しない。
+
+> **Control（`0x08`）= ロビー段のクライアント間ハンドシェイク**: 両プレイヤーが在室中、各自「対戦開始 / REMATCH」で `READY` を送る。`READY` には乱数 `seed` を載せ、受信側は **自分の seed と相手の seed を XOR**（0 のときは 1）して共有シードを得る。両者 READY がそろった瞬間に各自カウントダウン開始＝**ずれ≒片道遅延**で同時開始。共有シードは本体エンジンの「同ツモ」（テト `getNextType` / ぷよ `_initActiveColors`・`_makePair` の専用乱数 `tumoRng`）に注入する。サーバーは中身を解釈せず中継するのみ（Rust 変更不要）。
 
 ## 5. 盤面スナップショット（Lock `0x02` ボディ）
 

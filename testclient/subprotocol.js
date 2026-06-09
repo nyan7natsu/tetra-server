@@ -33,6 +33,15 @@
     HOLD: 0x05,
     PENDING: 0x06,
     GAMEOVER: 0x07,
+    CONTROL: 0x08, // 対戦の開始/再戦合意（ロビー段のクライアント間ハンドシェイク）
+  });
+
+  // ── CONTROL アクション（仕様 §4・サブタグ 0x08） ──
+  //   READY   = 開始/再戦の準備完了（seed を持つ。両者の seed を XOR して共有シードにする）
+  //   UNREADY = 準備をキャンセル（seed は未使用）
+  const CTRL = Object.freeze({
+    READY: 0x01,
+    UNREADY: 0x02,
   });
 
   // ──────────────────────────────────────────
@@ -186,14 +195,21 @@
     return new Writer(6).u8(EV.HOLD).u32(t).u8(heldType).finish();
   }
 
-  // PendingUpdate ── pending:u16（相手の予告ゲージ表示用）
-  function encodePending({ t, pending }) {
-    return new Writer(7).u8(EV.PENDING).u32(t).u16(pending).finish();
+  // PendingUpdate ── ready:u16, unready:u16（相手の予告ゲージ表示用・フェーズ別）
+  //   ready=確定(降下可・赤/点滅)段の合計 / unready=猶予(青)段の合計（いずれも internal は除外）
+  function encodePending({ t, ready = 0, unready = 0 }) {
+    return new Writer(9).u8(EV.PENDING).u32(t).u16(ready).u16(unready).finish();
   }
 
   // GameOver ── result:u8（0=topout/負, 1=clear/勝）
   function encodeGameOver({ t, result }) {
     return new Writer(6).u8(EV.GAMEOVER).u32(t).u8(result).finish();
+  }
+
+  // Control ── action:u8 + seed:u32（開始/再戦合意。seed は READY 時の共有シード素材）
+  //   サーバーは中身を解釈しないため、CONTROL も既存の中継経路で相手へそのまま届く。
+  function encodeControl({ t = 0, action, seed = 0 }) {
+    return new Writer(10).u8(EV.CONTROL).u32(t).u8(action).u32(seed >>> 0).finish();
   }
 
   // ── 統合デコーダ（rule: 相手の 'tet' | 'puyo'） ──
@@ -245,10 +261,18 @@
       }
       case EV.HOLD:
         return { kind: "hold", t, heldType: r.u8() };
-      case EV.PENDING:
-        return { kind: "pending", t, pending: r.u16() };
+      case EV.PENDING: {
+        const ready = r.u16();
+        const unready = r.u16();
+        return { kind: "pending", t, ready, unready, pending: ready + unready };
+      }
       case EV.GAMEOVER:
         return { kind: "gameover", t, result: r.u8() };
+      case EV.CONTROL: {
+        const action = r.u8();
+        const seed = r.u32();
+        return { kind: "control", t, action, seed };
+      }
       default:
         return { kind: "unknown", t, tag };
     }
@@ -305,14 +329,14 @@
     VERSION: 1,
     TET_COLS, TET_ROWS, TET_BUFFER_ROWS, TET_TOTAL_ROWS,
     PUYO_COLS, PUYO_ROWS, TET_EMPTY, PUYO_EMPTY,
-    EV,
+    EV, CTRL,
     // PieceState
     encodePieceStateTet, encodePieceStatePuyo, decodePieceState,
     // GameEvent encoders
     encodeSpawnTet, encodeSpawnPuyo,
     encodeLockTet, encodeLockPuyo,
     encodeClearTet, encodeClearPuyo,
-    encodeGarbage, encodeHold, encodePending, encodeGameOver,
+    encodeGarbage, encodeHold, encodePending, encodeGameOver, encodeControl,
     // GameEvent decoder
     decodeGameEvent,
     // board builders / inverse

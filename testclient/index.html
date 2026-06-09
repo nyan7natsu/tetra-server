@@ -382,7 +382,7 @@ function fmtEvent(e) {
       : `Clear(tet) t=${e.t} rows=[${e.rowIdx}] b2b=${e.b2b} pc=${e.pc} tspin=${e.tspin}`;
     case "garbage": return `★GarbageSend t=${e.t} amount=${e.amount} holes=[${e.holes}]`;
     case "hold": return `Hold t=${e.t} type=${e.heldType}`;
-    case "pending": return `Pending t=${e.t} pending=${e.pending}`;
+    case "pending": return `Pending t=${e.t} ready=${e.ready} unready=${e.unready} (total=${e.pending})`;
     case "gameover": return `GameOver t=${e.t} result=${e.result}(${e.result ? "win/clear" : "topout"})`;
     default: return `不明イベント tag=0x${(e.tag || 0).toString(16)}`;
   }
@@ -447,7 +447,7 @@ function evGarbage() {
   sendGameEvent(data); log(`→ ★GarbageSend ${data.length}B amount=${amount} holes=[${holes}]`, "info");
 }
 function evHold() { const t = nowT(); sendGameEvent(Subprotocol.encodeHold({ t, heldType: Math.floor(Math.random() * 7) })); log("→ Hold", "info"); }
-function evPending() { const t = nowT(); sendGameEvent(Subprotocol.encodePending({ t, pending: Math.floor(Math.random() * 20) })); log("→ Pending", "info"); }
+function evPending() { const t = nowT(); sendGameEvent(Subprotocol.encodePending({ t, ready: Math.floor(Math.random() * 10), unready: Math.floor(Math.random() * 10) })); log("→ Pending", "info"); }
 function evGameOver() { const t = nowT(); sendGameEvent(Subprotocol.encodeGameOver({ t, result: Math.round(Math.random()) })); log("→ GameOver", "info"); }
 
 function sendPing() {
