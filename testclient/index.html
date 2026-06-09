@@ -24,6 +24,11 @@
 <fieldset>
   <legend>接続</legend>
   <div class="row">
+    接続先: <input id="signalUrl" size="46" placeholder="wss://... または ws://127.0.0.1:8080" />
+    <button id="useLocal" title="ローカル開発サーバーに切替">local</button>
+    <button id="useCanary" title="検証(canary)サーバーに切替">canary</button>
+  </div>
+  <div class="row">
     <button id="connect">①接続</button>
     username: <input id="username" value="player" size="8" />
   </div>
@@ -83,7 +88,16 @@
 
 <script src="subprotocol.js"></script>
 <script>
-const SIGNALING_URL = "ws://127.0.0.1:8080";
+// 接続先シグナリングURL。優先順: ?url= クエリ > localStorage > canary 既定。
+// 画面の入力欄でいつでも差し替え可能（接続ボタン押下時の値を使う）。
+const LOCAL_URL  = "ws://127.0.0.1:8080";
+const CANARY_URL = "wss://tetlabo-canary-server.nattyantv.info";
+function initialUrl() {
+  const q = new URLSearchParams(location.search).get("url");
+  if (q) return q;
+  try { const s = localStorage.getItem("signalUrl"); if (s) return s; } catch (_) {}
+  return CANARY_URL;
+}
 const logEl = document.getElementById("log");
 function log(msg, cls = "") {
   const t = new Date().toISOString().substr(11, 12);
@@ -136,8 +150,11 @@ function setReady(connected) {
 }
 
 function connect() {
+  const url = ($("signalUrl").value || "").trim() || CANARY_URL;
+  try { localStorage.setItem("signalUrl", url); } catch (_) {}
   remoteSet = false; openCount = 0; pendingCandidates.length = 0;
-  ws = new WebSocket(SIGNALING_URL);
+  log(`接続先: ${url}`, "info");
+  ws = new WebSocket(url);
   ws.onerror = () => log("WebSocket エラー", "err");
   ws.onclose = () => log("WebSocket クローズ", "info");
   ws.onmessage = async (ev) => {
@@ -438,6 +455,9 @@ function sendPing() {
   reliable.send(buf); log("→ Ping(0x01) 送信", "info");
 }
 
+$("signalUrl").value = initialUrl();
+$("useLocal").onclick = () => { $("signalUrl").value = LOCAL_URL; };
+$("useCanary").onclick = () => { $("signalUrl").value = CANARY_URL; };
 $("connect").onclick = connect;
 $("getRooms").onclick = getRooms;
 $("create").onclick = createRoom;
