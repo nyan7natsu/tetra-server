@@ -88,10 +88,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let game = Arc::new(Mutex::new(game::Game::default()));
 
-    game.lock()
-        .await
-        .new_room(uuid::Uuid::new_v4(), "TEST".to_string(), 2, None, vec![]);
-
     while let Ok((stream, _)) = listener.accept().await {
         nest!(game, api);
 
@@ -111,6 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await
                     .expect("Failed to create peer connection"),
             );
+
+            // この接続（=1本の PeerConnection）に属する player_id を1回だけ発番する。
+            // reliable/unreliable の両 DataChannel は同じ PeerConnection 上に生成されるため、
+            // 両ハンドラへ同じ id を渡すことで game.rs の check_if_ready が成立する。
+            let player_id = uuid::Uuid::new_v4();
 
             let ws_sender_for_ice = Arc::clone(&ws_sender);
             peer_connection.on_ice_candidate(Box::new(move |candidate| {
@@ -157,17 +158,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         connection::RELIABLE_CHANNEL_LABEL => Box::pin(async move {
                             nest!(game);
 
-                            let _ = tokio::spawn(handle_reliable_connection(dc, game))
-                                .instrument(info_span!("handle_connection", dc_label = %dc_label));
+                            let _ = tokio::spawn(handle_reliable_connection(dc, game, player_id))
+                                .instrument(info_span!("handle_connection", dc_label = %dc_label, player_id = %player_id));
                         }),
                         connection::UNRELIABLE_CHANNEL_LABEL => Box::pin(async move {
                             nest!(game);
 
-                            let _ =
-                                tokio::spawn(connection::handle_unreliable_connection(dc, game))
-                                    .instrument(
-                                        info_span!("handle_connection", dc_label = %dc_label),
-                                    );
+                            let _ = tokio::spawn(connection::handle_unreliable_connection(dc, game, player_id))
+                                .instrument(info_span!("handle_connection", dc_label = %dc_label, player_id = %player_id));
                         }),
                         _ => {
                             debug!("Unknown data channel label: {dc_label}");
