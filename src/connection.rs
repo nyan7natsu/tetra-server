@@ -4,7 +4,7 @@ use tokio::{sync::Mutex, time::sleep};
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use crate::game::Game;
+use crate::game::{Game, MatchResult};
 use crate::payload;
 
 pub const RELIABLE_CHANNEL_LABEL: &str = "reliable-main";
@@ -161,6 +161,7 @@ pub async fn handle_reliable_connection(
                             payload::JsonMessage::JSONPing(req) => {
                                 jsend!(dc_clone, JSONPong { id: req.id });
                             }
+
                             payload::JsonMessage::JSONGetRoomsRequest(req) => {
                                 let req_id = req.id;
                                 let game = game.lock().await;
@@ -182,6 +183,7 @@ pub async fn handle_reliable_connection(
 
                                 jsend!(dc_clone, JSONGetRoomsResponse { id: req_id, rooms });
                             }
+
                             payload::JsonMessage::JSONCreateRoomRequest(req) => {
                                 let req_id = req.id;
                                 let room_name = req.room_name;
@@ -225,6 +227,7 @@ pub async fn handle_reliable_connection(
                                     }
                                 );
                             }
+
                             payload::JsonMessage::JSONJoinRoomRequest(req) => {
                                 let req_id = req.id;
                                 let room_id = req.room_id;
@@ -236,16 +239,15 @@ pub async fn handle_reliable_connection(
                                 // 満員/開始済み/存在チェックは add_player_to_room に委譲する。
                                 let result = {
                                     let mut g = game.lock().await;
-                                    let pw_ok = g
-                                        .rooms
-                                        .get(&room_id)
-                                        .map(|room| {
-                                            room.password.is_none() || room.password == password
-                                        });
+                                    let pw_ok = g.rooms.get(&room_id).map(|room| {
+                                        room.password.is_none() || room.password == password
+                                    });
                                     match pw_ok {
                                         None => Err("Room not found".to_string()),
                                         Some(false) => Err("Incorrect password".to_string()),
-                                        Some(true) => g.add_player_to_room(room_id, id, username, rule),
+                                        Some(true) => {
+                                            g.add_player_to_room(room_id, id, username, rule)
+                                        }
                                     }
                                 };
 
@@ -303,7 +305,9 @@ pub async fn handle_reliable_connection(
                                                 )
                                             } else {
                                                 (
-                                                    g.add_player_to_room(room_id, id, username, rule),
+                                                    g.add_player_to_room(
+                                                        room_id, id, username, rule,
+                                                    ),
                                                     Some(room_id),
                                                 )
                                             }
@@ -349,7 +353,7 @@ pub async fn handle_reliable_connection(
 
                                 let outcome = game.lock().await.random_match(id, username, rule);
                                 match outcome {
-                                    crate::game::MatchResult::Matched { room_id, .. } => {
+                                    MatchResult::Matched { room_id, .. } => {
                                         jsend!(
                                             dc_clone,
                                             JSONJoinRandomMatchResponse {
@@ -362,7 +366,7 @@ pub async fn handle_reliable_connection(
                                         // （待機していた側はこれで相手の参加を知る）
                                         notify_room(&game, room_id).await;
                                     }
-                                    crate::game::MatchResult::Waiting => {
+                                    MatchResult::Waiting => {
                                         jsend!(
                                             dc_clone,
                                             JSONJoinRandomMatchResponse {
@@ -385,6 +389,7 @@ pub async fn handle_reliable_connection(
                                     }
                                 );
                             }
+
                             payload::JsonMessage::JSONLeaveRoomRequest(req) => {
                                 let req_id = req.id;
                                 let room_id = req.room_id;
@@ -414,88 +419,90 @@ pub async fn handle_reliable_connection(
                                     notify_room(&game, room_id).await;
                                 }
                             }
+
                             payload::JsonMessage::JSONRoomUpdateRequest(req) => {
                                 let req_id = req.id;
                                 let room_id = req.room_id;
 
-                                let mut game = game.lock().await;
-                                let room = match game.rooms.get_mut(&room_id) {
-                                    Some(r) => r,
-                                    None => {
+                                let update_result = {
+                                    let mut game_mut = game.lock().await;
+                                    let room = match game_mut.rooms.get_mut(&room_id) {
+                                        Some(r) => r,
+                                        None => {
+                                            jsend!(
+                                                dc_clone,
+                                                JSONRoomUpdateResponse {
+                                                    id: req_id,
+                                                    success: false,
+                                                    message: Some("Room not found".to_string()),
+                                                }
+                                            );
+                                            return;
+                                        }
+                                    };
+
+                                    if room.owner != id {
                                         jsend!(
                                             dc_clone,
                                             JSONRoomUpdateResponse {
                                                 id: req_id,
                                                 success: false,
-                                                message: Some("Room not found".to_string()),
+                                                message: Some(
+                                                    "Only the room owner can update the room"
+                                                        .to_string()
+                                                ),
                                             }
                                         );
                                         return;
                                     }
-                                };
 
-                                if room.owner != id {
+                                    let update_result = (|| {
+                                        room.room_name = req.room_name;
+                                        if req.max_players < room.players.len() as u8 {
+                                            return Err(
+                                            "Max players cannot be less than current player count"
+                                                .to_string(),
+                                        );
+                                        }
+                                        room.max_players = req.max_players;
+                                        if req.password.is_some() {
+                                            room.password = req.password;
+                                        }
+                                        room.tags = req
+                                            .tags
+                                            .into_iter()
+                                            .map(|t| match t {
+                                                0 => crate::room::RoomTag::PuyoTet,
+                                                1 => crate::room::RoomTag::PuyoOnly,
+                                                2 => crate::room::RoomTag::TetOnly,
+                                                3 => crate::room::RoomTag::Casual,
+                                                4 => crate::room::RoomTag::Competitive,
+                                                _ => {
+                                                    error!("Unknown room tag: {t}");
+                                                    crate::room::RoomTag::Casual
+                                                }
+                                            })
+                                            .collect();
+                                        Ok(())
+                                    })();
+
                                     jsend!(
                                         dc_clone,
                                         JSONRoomUpdateResponse {
                                             id: req_id,
-                                            success: false,
-                                            message: Some(
-                                                "Only the room owner can update the room"
-                                                    .to_string()
-                                            ),
+                                            success: update_result.is_ok(),
+                                            message: update_result.clone().err()
                                         }
                                     );
-                                    return;
-                                }
 
-                                let update_result = (|| {
-                                    room.room_name = req.room_name;
-                                    if req.max_players < room.players.len() as u8 {
-                                        return Err(
-                                            "Max players cannot be less than current player count"
-                                                .to_string(),
-                                        );
-                                    }
-                                    room.max_players = req.max_players;
-                                    if req.password.is_some() {
-                                        room.password = req.password;
-                                    }
-                                    room.tags = req
-                                        .tags
-                                        .into_iter()
-                                        .map(|t| match t {
-                                            0 => crate::room::RoomTag::PuyoTet,
-                                            1 => crate::room::RoomTag::PuyoOnly,
-                                            2 => crate::room::RoomTag::TetOnly,
-                                            3 => crate::room::RoomTag::Casual,
-                                            4 => crate::room::RoomTag::Competitive,
-                                            _ => {
-                                                error!("Unknown room tag: {t}");
-                                                crate::room::RoomTag::Casual
-                                            }
-                                        })
-                                        .collect();
-                                    Ok(())
-                                })();
-
-                                let resp = payload::JSONRoomUpdateResponse {
-                                    id: req_id,
-                                    success: update_result.is_ok(),
-                                    message: update_result.err(),
+                                    update_result.is_ok()
                                 };
-                                let body = payload::JsonMessage::JSONRoomUpdateResponse(resp)
-                                    .to_response_body()
-                                    .expect("Failed to build JSON response");
-                                let binary_resp = payload::wrap_with_opcode(
-                                    payload::Opcode::JSONResponsePayload,
-                                    body,
-                                );
 
-                                if let Err(e) = dc_clone.send(&Bytes::from(binary_resp)).await {
-                                    error!("Failed to send response: {e}");
+                                if update_result {
+                                    notify_room(&game, room_id).await;
                                 }
                             }
+
                             other => {
                                 info!("Unhandled JSON request: {other:?}");
                             }
@@ -514,7 +521,9 @@ pub async fn handle_reliable_connection(
                                 error!("Failed to relay GameEvent to opponent: {e}");
                             }
                         }
-                        None => debug!("GameEvent received but no opponent to relay to (player [{id}])"),
+                        None => {
+                            debug!("GameEvent received but no opponent to relay to (player [{id}])")
+                        }
                     }
                 }
                 other => {
