@@ -387,29 +387,6 @@ pub async fn handle_reliable_connection(
                                         success
                                     }
                                 );
-
-                                let game = game.lock().await;
-
-                                for (pid, _) in &room.players {
-                                    if *pid != id {
-                                        if let Some(dc) = game.get_reliable_connection(pid) {
-                                            jsend!(
-                                                dc,
-                                                JSONRoomInfoNotification {
-                                                    room_id,
-                                                    room_name: room.room_name.clone(),
-                                                    players: room.players.clone(),
-                                                    max_players: room.max_players,
-                                                    tags: room
-                                                        .tags
-                                                        .iter()
-                                                        .map(|tag| *tag as u32)
-                                                        .collect(),
-                                                }
-                                            );
-                                        }
-                                    }
-                                }
                             }
 
                             payload::JsonMessage::JSONLeaveRoomRequest(req) => {
@@ -512,31 +489,12 @@ pub async fn handle_reliable_connection(
                                     JSONRoomUpdateResponse {
                                         id: req_id,
                                         success: update_result.is_ok(),
-                                        message: update_result.err()
+                                        message: update_result.clone().err()
                                     }
                                 );
 
-                                let game = game.lock().await;
-
-                                for (pid, _) in &room.players {
-                                    if *pid != id {
-                                        if let Some(dc) = game.get_reliable_connection(pid) {
-                                            jsend!(
-                                                dc,
-                                                JSONRoomInfoNotification {
-                                                    room_id,
-                                                    room_name: room.room_name.clone(),
-                                                    players: room.players.clone(),
-                                                    max_players: room.max_players,
-                                                    tags: room
-                                                        .tags
-                                                        .iter()
-                                                        .map(|tag| *tag as u32)
-                                                        .collect(),
-                                                }
-                                            );
-                                        }
-                                    }
+                                if update_result.is_ok() {
+                                    notify_room(&game, room_id).await;
                                 }
                             }
 
