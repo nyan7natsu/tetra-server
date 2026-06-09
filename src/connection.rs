@@ -424,77 +424,81 @@ pub async fn handle_reliable_connection(
                                 let req_id = req.id;
                                 let room_id = req.room_id;
 
-                                let mut game_mut = game.lock().await;
-                                let room = match game_mut.rooms.get_mut(&room_id) {
-                                    Some(r) => r,
-                                    None => {
+                                let update_result = {
+                                    let mut game_mut = game.lock().await;
+                                    let room = match game_mut.rooms.get_mut(&room_id) {
+                                        Some(r) => r,
+                                        None => {
+                                            jsend!(
+                                                dc_clone,
+                                                JSONRoomUpdateResponse {
+                                                    id: req_id,
+                                                    success: false,
+                                                    message: Some("Room not found".to_string()),
+                                                }
+                                            );
+                                            return;
+                                        }
+                                    };
+
+                                    if room.owner != id {
                                         jsend!(
                                             dc_clone,
                                             JSONRoomUpdateResponse {
                                                 id: req_id,
                                                 success: false,
-                                                message: Some("Room not found".to_string()),
+                                                message: Some(
+                                                    "Only the room owner can update the room"
+                                                        .to_string()
+                                                ),
                                             }
                                         );
                                         return;
                                     }
-                                };
 
-                                if room.owner != id {
+                                    let update_result = (|| {
+                                        room.room_name = req.room_name;
+                                        if req.max_players < room.players.len() as u8 {
+                                            return Err(
+                                            "Max players cannot be less than current player count"
+                                                .to_string(),
+                                        );
+                                        }
+                                        room.max_players = req.max_players;
+                                        if req.password.is_some() {
+                                            room.password = req.password;
+                                        }
+                                        room.tags = req
+                                            .tags
+                                            .into_iter()
+                                            .map(|t| match t {
+                                                0 => crate::room::RoomTag::PuyoTet,
+                                                1 => crate::room::RoomTag::PuyoOnly,
+                                                2 => crate::room::RoomTag::TetOnly,
+                                                3 => crate::room::RoomTag::Casual,
+                                                4 => crate::room::RoomTag::Competitive,
+                                                _ => {
+                                                    error!("Unknown room tag: {t}");
+                                                    crate::room::RoomTag::Casual
+                                                }
+                                            })
+                                            .collect();
+                                        Ok(())
+                                    })();
+
                                     jsend!(
                                         dc_clone,
                                         JSONRoomUpdateResponse {
                                             id: req_id,
-                                            success: false,
-                                            message: Some(
-                                                "Only the room owner can update the room"
-                                                    .to_string()
-                                            ),
+                                            success: update_result.is_ok(),
+                                            message: update_result.clone().err()
                                         }
                                     );
-                                    return;
-                                }
 
-                                let update_result = (|| {
-                                    room.room_name = req.room_name;
-                                    if req.max_players < room.players.len() as u8 {
-                                        return Err(
-                                            "Max players cannot be less than current player count"
-                                                .to_string(),
-                                        );
-                                    }
-                                    room.max_players = req.max_players;
-                                    if req.password.is_some() {
-                                        room.password = req.password;
-                                    }
-                                    room.tags = req
-                                        .tags
-                                        .into_iter()
-                                        .map(|t| match t {
-                                            0 => crate::room::RoomTag::PuyoTet,
-                                            1 => crate::room::RoomTag::PuyoOnly,
-                                            2 => crate::room::RoomTag::TetOnly,
-                                            3 => crate::room::RoomTag::Casual,
-                                            4 => crate::room::RoomTag::Competitive,
-                                            _ => {
-                                                error!("Unknown room tag: {t}");
-                                                crate::room::RoomTag::Casual
-                                            }
-                                        })
-                                        .collect();
-                                    Ok(())
-                                })();
+                                    update_result.is_ok()
+                                };
 
-                                jsend!(
-                                    dc_clone,
-                                    JSONRoomUpdateResponse {
-                                        id: req_id,
-                                        success: update_result.is_ok(),
-                                        message: update_result.clone().err()
-                                    }
-                                );
-
-                                if update_result.is_ok() {
+                                if update_result {
                                     notify_room(&game, room_id).await;
                                 }
                             }
@@ -517,7 +521,9 @@ pub async fn handle_reliable_connection(
                                 error!("Failed to relay GameEvent to opponent: {e}");
                             }
                         }
-                        None => debug!("GameEvent received but no opponent to relay to (player [{id}])"),
+                        None => {
+                            debug!("GameEvent received but no opponent to relay to (player [{id}])")
+                        }
                     }
                 }
                 other => {
