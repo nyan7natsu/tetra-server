@@ -28,8 +28,9 @@ pub struct Room {
     pub status: RoomStatus,
     /// ルームのオーナーID
     pub owner: Uuid,
-    /// プレイヤーIDと名前のタプルのVec
-    pub players: Vec<(Uuid, String)>,
+    /// プレイヤー (ID, 名前, ルール"tet"|"puyo") のタプルの Vec。
+    /// ルールは対戦前に相手へ伝える（ロビーで相手のテト/ぷよを表示する）ために保持する。
+    pub players: Vec<(Uuid, String, String)>,
     /// 部屋の名前
     pub room_name: String,
     /// 最大プレイヤー数

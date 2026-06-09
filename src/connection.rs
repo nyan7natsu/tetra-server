@@ -50,7 +50,7 @@ async fn notify_room(game: &Arc<Mutex<Game>>, room_id: Uuid) {
         let dcs = room
             .players
             .iter()
-            .filter_map(|(pid, _)| game.get_reliable_connection(pid))
+            .filter_map(|(pid, _, _)| game.get_reliable_connection(pid))
             .collect();
         (body, dcs)
     };
@@ -188,6 +188,7 @@ pub async fn handle_reliable_connection(
                                 let max_players = req.max_players;
                                 let password = req.password;
                                 let username = req.username;
+                                let rule = req.rule;
                                 let tags = req
                                     .tags
                                     .into_iter()
@@ -212,6 +213,7 @@ pub async fn handle_reliable_connection(
                                     password,
                                     tags,
                                     username,
+                                    rule,
                                 );
 
                                 jsend!(
@@ -228,6 +230,7 @@ pub async fn handle_reliable_connection(
                                 let room_id = req.room_id;
                                 let password = req.password;
                                 let username = req.username;
+                                let rule = req.rule;
 
                                 // ロックを取得して参加処理。パスワード検証はここで行い、
                                 // 満員/開始済み/存在チェックは add_player_to_room に委譲する。
@@ -242,7 +245,7 @@ pub async fn handle_reliable_connection(
                                     match pw_ok {
                                         None => Err("Room not found".to_string()),
                                         Some(false) => Err("Incorrect password".to_string()),
-                                        Some(true) => g.add_player_to_room(room_id, id, username),
+                                        Some(true) => g.add_player_to_room(room_id, id, username, rule),
                                     }
                                 };
 
@@ -278,6 +281,7 @@ pub async fn handle_reliable_connection(
                                 let code = req.code;
                                 let password = req.password;
                                 let username = req.username;
+                                let rule = req.rule;
 
                                 let (result, joined_room) = {
                                     let mut g = game.lock().await;
@@ -299,7 +303,7 @@ pub async fn handle_reliable_connection(
                                                 )
                                             } else {
                                                 (
-                                                    g.add_player_to_room(room_id, id, username),
+                                                    g.add_player_to_room(room_id, id, username, rule),
                                                     Some(room_id),
                                                 )
                                             }
@@ -341,8 +345,9 @@ pub async fn handle_reliable_connection(
                             payload::JsonMessage::JSONJoinRandomMatchRequest(req) => {
                                 let req_id = req.id;
                                 let username = req.username;
+                                let rule = req.rule;
 
-                                let outcome = game.lock().await.random_match(id, username);
+                                let outcome = game.lock().await.random_match(id, username, rule);
                                 match outcome {
                                     crate::game::MatchResult::Matched { room_id, .. } => {
                                         jsend!(

@@ -295,6 +295,7 @@ function createRoom() {
     type: "JSONCreateRoomRequest", id: reqId(),
     roomName: $("roomName").value || "myroom", maxPlayers: 2,
     password: null, tags: [], username: $("username").value || "player",
+    rule: $("myRule").value,
   }));
 }
 function joinByCode() {
@@ -303,12 +304,14 @@ function joinByCode() {
   reliable.send(buildJsonRequest({
     type: "JSONJoinByCodeRequest", id: reqId(),
     code, password: null, username: $("username").value || "player",
+    rule: $("myRule").value,
   }));
 }
 function randomMatch() {
   $("cancelRandom").disabled = false;
   reliable.send(buildJsonRequest({
     type: "JSONJoinRandomMatchRequest", id: reqId(), username: $("username").value || "player",
+    rule: $("myRule").value,
   }));
 }
 function cancelRandom() {
@@ -320,6 +323,7 @@ function joinRoom() {
   reliable.send(buildJsonRequest({
     type: "JSONJoinRoomRequest", id: reqId(),
     roomId, password: null, username: $("username").value || "player",
+    rule: $("myRule").value,
   }));
 }
 function leaveRoom() {

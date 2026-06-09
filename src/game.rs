@@ -35,8 +35,8 @@ pub struct Game {
     player_rooms: HashMap<Uuid, Uuid>,
     /// 友人参加用: ルームコード -> room_id の逆引き。
     room_codes: HashMap<String, Uuid>,
-    /// ランダムマッチの待機列（FIFO）。(player_id, username)。
-    matchmaking_queue: VecDeque<(Uuid, String)>,
+    /// ランダムマッチの待機列（FIFO）。(player_id, username, rule)。
+    matchmaking_queue: VecDeque<(Uuid, String, String)>,
 }
 
 impl Default for Game {
@@ -108,7 +108,7 @@ impl Game {
         }
         self.connections.remove(player_id);
         // 待機列からも除外
-        self.matchmaking_queue.retain(|(pid, _)| pid != player_id);
+        self.matchmaking_queue.retain(|(pid, _, _)| pid != player_id);
         // 経路表・所属ルームからも退去させる
         self.leave_room(player_id);
     }
@@ -120,6 +120,7 @@ impl Game {
         room_id: Uuid,
         player_id: Uuid,
         username: String,
+        rule: String,
     ) -> Result<(), String> {
         let room = self
             .rooms
@@ -128,14 +129,14 @@ impl Game {
         if room.status != RoomStatus::Waiting {
             return Err("Game has already started".to_string());
         }
-        if room.players.iter().any(|(pid, _)| *pid == player_id) {
+        if room.players.iter().any(|(pid, _, _)| *pid == player_id) {
             // すでに参加済み。冪等に成功扱い。
             return Ok(());
         }
         if room.players.len() as u8 >= room.max_players {
             return Err("Room is full".to_string());
         }
-        room.players.push((player_id, username));
+        room.players.push((player_id, username, rule));
         self.player_rooms.insert(player_id, room_id);
         Ok(())
     }
@@ -148,7 +149,7 @@ impl Game {
         };
         let mut empty_code: Option<String> = None;
         if let Some(room) = self.rooms.get_mut(&room_id) {
-            room.players.retain(|(pid, _)| pid != player_id);
+            room.players.retain(|(pid, _, _)| pid != player_id);
             if room.players.is_empty() {
                 empty_code = Some(room.code.clone());
             }
@@ -164,10 +165,12 @@ impl Game {
         self.room_codes.get(code).copied()
     }
 
-    /// 既存コードと衝突しない6桁の短いルームコードを生成する。
+    /// 既存コードと衝突しない6桁の数字ルームコードを生成する。
+    /// 英字（特に大文字 O/0・I/1 など）は数字と紛らわしいため、数字のみ・ゼロ埋め6桁にする。
     fn generate_room_code(&self) -> String {
         loop {
-            let code = Uuid::new_v4().simple().to_string()[..6].to_uppercase();
+            let n = (Uuid::new_v4().as_u128() % 1_000_000) as u32;
+            let code = format!("{n:06}");
             if !self.room_codes.contains_key(&code) {
                 return code;
             }
@@ -176,17 +179,24 @@ impl Game {
 
     /// ランダムマッチ。待機列に相手がいればルームを作って両者を入れる。
     /// いなければ自身を待機列へ追加する。
-    pub fn random_match(&mut self, player_id: Uuid, username: String) -> MatchResult {
+    pub fn random_match(&mut self, player_id: Uuid, username: String, rule: String) -> MatchResult {
         if let Some(pos) = self
             .matchmaking_queue
             .iter()
-            .position(|(pid, _)| *pid != player_id)
+            .position(|(pid, _, _)| *pid != player_id)
         {
-            let (opp_id, opp_name) = self.matchmaking_queue.remove(pos).unwrap();
+            let (opp_id, opp_name, opp_rule) = self.matchmaking_queue.remove(pos).unwrap();
             // 待機していた相手をオーナーにしてルームを作成（相手は player[0] として入る）
-            let (room_id, _code) =
-                self.new_room(opp_id, "Random Match".to_string(), 2, None, vec![], opp_name);
-            let _ = self.add_player_to_room(room_id, player_id, username);
+            let (room_id, _code) = self.new_room(
+                opp_id,
+                "Random Match".to_string(),
+                2,
+                None,
+                vec![],
+                opp_name,
+                opp_rule,
+            );
+            let _ = self.add_player_to_room(room_id, player_id, username, rule);
             MatchResult::Matched {
                 room_id,
                 opponent: opp_id,
@@ -195,9 +205,9 @@ impl Game {
             if !self
                 .matchmaking_queue
                 .iter()
-                .any(|(pid, _)| *pid == player_id)
+                .any(|(pid, _, _)| *pid == player_id)
             {
-                self.matchmaking_queue.push_back((player_id, username));
+                self.matchmaking_queue.push_back((player_id, username, rule));
             }
             MatchResult::Waiting
         }
@@ -206,7 +216,7 @@ impl Game {
     /// ランダムマッチの待機列から離脱する。離脱できたら true。
     pub fn cancel_random_match(&mut self, player_id: &Uuid) -> bool {
         let before = self.matchmaking_queue.len();
-        self.matchmaking_queue.retain(|(pid, _)| pid != player_id);
+        self.matchmaking_queue.retain(|(pid, _, _)| pid != player_id);
         before != self.matchmaking_queue.len()
     }
 
@@ -216,7 +226,7 @@ impl Game {
         let room = self.rooms.get(room_id)?;
         room.players
             .iter()
-            .map(|(pid, _)| *pid)
+            .map(|(pid, _, _)| *pid)
             .find(|pid| pid != player_id)
     }
 
@@ -269,13 +279,14 @@ impl Game {
         password: Option<String>,
         tags: Vec<crate::room::RoomTag>,
         owner_username: String,
+        owner_rule: String,
     ) -> (Uuid, String) {
         let room_id = Uuid::new_v4();
         let code = self.generate_room_code();
         let room = Room {
             status: RoomStatus::Waiting,
             owner,
-            players: vec![(owner, owner_username)],
+            players: vec![(owner, owner_username, owner_rule)],
             room_name,
             max_players,
             password,

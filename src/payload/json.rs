@@ -89,13 +89,13 @@ json_message!(
         Pong, (id, Uuid);
         GetRoomsRequest, (id, Uuid);
         GetRoomsResponse, (id, Uuid), (rooms, Vec<ListRoomInfo>);
-        CreateRoomRequest, (id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>), (username, String);
+        CreateRoomRequest, (id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>), (username, String), (rule, String);
         CreateRoomResponse, (id, Uuid), (room_id, Uuid), (code, String);
-        JoinRoomRequest, (id, Uuid), (room_id, Uuid), (password, Option<String>), (username, String);
+        JoinRoomRequest, (id, Uuid), (room_id, Uuid), (password, Option<String>), (username, String), (rule, String);
         JoinRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
-        JoinByCodeRequest, (id, Uuid), (code, String), (password, Option<String>), (username, String);
+        JoinByCodeRequest, (id, Uuid), (code, String), (password, Option<String>), (username, String), (rule, String);
         JoinByCodeResponse, (id, Uuid), (success, bool), (message, Option<String>), (room_id, Option<Uuid>);
-        JoinRandomMatchRequest, (id, Uuid), (username, String);
+        JoinRandomMatchRequest, (id, Uuid), (username, String), (rule, String);
         JoinRandomMatchResponse, (id, Uuid), (matched, bool), (room_id, Option<Uuid>);
         CancelRandomMatchRequest, (id, Uuid);
         CancelRandomMatchResponse, (id, Uuid), (success, bool);
@@ -103,7 +103,7 @@ json_message!(
         LeaveRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
         RoomUpdateRequest, (id, Uuid), (room_id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>);
         RoomUpdateResponse, (id, Uuid), (success, bool), (message, Option<String>);
-        RoomInfoNotification, (room_id, Uuid), (room_name, String), (players, Vec<(Uuid, String)>), (max_players, u8), (tags, Vec<u32>);
+        RoomInfoNotification, (room_id, Uuid), (room_name, String), (players, Vec<(Uuid, String, String)>), (max_players, u8), (tags, Vec<u32>);
         RoomLeaveNotification, (message, String);
     }
 );
