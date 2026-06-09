@@ -4,7 +4,7 @@ use tokio::{sync::Mutex, time::sleep};
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use crate::game::Game;
+use crate::game::{Game, MatchResult};
 use crate::payload;
 
 pub const RELIABLE_CHANNEL_LABEL: &str = "reliable-main";
@@ -352,7 +352,7 @@ pub async fn handle_reliable_connection(
 
                                 let outcome = game.lock().await.random_match(id, username, rule);
                                 match outcome {
-                                    crate::game::MatchResult::Matched { room_id, .. } => {
+                                    MatchResult::Matched { room_id, .. } => {
                                         jsend!(
                                             dc_clone,
                                             JSONJoinRandomMatchResponse {
@@ -365,7 +365,7 @@ pub async fn handle_reliable_connection(
                                         // （待機していた側はこれで相手の参加を知る）
                                         notify_room(&game, room_id).await;
                                     }
-                                    crate::game::MatchResult::Waiting => {
+                                    MatchResult::Waiting => {
                                         jsend!(
                                             dc_clone,
                                             JSONJoinRandomMatchResponse {
