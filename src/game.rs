@@ -299,3 +299,64 @@ impl Game {
         (room_id, code)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::RwLock;
+
+    /// 中継ホットパス(get_opponent_channel)が依存する経路引き get_opponent が
+    /// 正しく相手を返すこと、退室で経路が消えることを確認する。
+    #[test]
+    fn get_opponent_routes_through_room() {
+        let mut game = Game::default();
+        let owner = Uuid::new_v4();
+        let guest = Uuid::new_v4();
+
+        let (room_id, _code) = game.new_room(
+            owner,
+            "test".to_string(),
+            2,
+            None,
+            vec![],
+            "owner".to_string(),
+            "tet".to_string(),
+        );
+        game.add_player_to_room(room_id, guest, "guest".to_string(), "puyo".to_string())
+            .expect("guest should join");
+
+        // 双方向に相手を引ける
+        assert_eq!(game.get_opponent(&owner), Some(guest));
+        assert_eq!(game.get_opponent(&guest), Some(owner));
+
+        // 退室すると経路が消える（中継先なし）
+        game.leave_room(&guest);
+        assert_eq!(game.get_opponent(&owner), None);
+    }
+
+    /// Issue #8 の核心: Game を RwLock で包むと「読み取りは並行・書き込みは排他」に
+    /// なることを実体で確認する。中継(読み取り)が全ルーム並行に走れる根拠。
+    #[test]
+    fn rwlock_allows_concurrent_reads_but_exclusive_writes() {
+        let lock = Arc::new(RwLock::new(Game::default()));
+
+        // 複数の読み取りロックを同時に保持できる（= 複数ルームの中継が並行）
+        let r1 = lock.try_read().expect("first read lock");
+        let r2 = lock.try_read().expect("concurrent read lock");
+
+        // 読み取り保持中は書き込みを取れない（排他）
+        assert!(
+            lock.try_write().is_err(),
+            "writer must not acquire while readers hold the lock"
+        );
+
+        drop(r1);
+        drop(r2);
+
+        // 読み取りが全て解放されれば書き込みを取れる
+        assert!(
+            lock.try_write().is_ok(),
+            "writer should acquire once all readers released"
+        );
+    }
+}
