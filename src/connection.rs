@@ -239,16 +239,15 @@ pub async fn handle_reliable_connection(
                                 // 満員/開始済み/存在チェックは add_player_to_room に委譲する。
                                 let result = {
                                     let mut g = game.lock().await;
-                                    let pw_ok = g
-                                        .rooms
-                                        .get(&room_id)
-                                        .map(|room| {
-                                            room.password.is_none() || room.password == password
-                                        });
+                                    let pw_ok = g.rooms.get(&room_id).map(|room| {
+                                        room.password.is_none() || room.password == password
+                                    });
                                     match pw_ok {
                                         None => Err("Room not found".to_string()),
                                         Some(false) => Err("Incorrect password".to_string()),
-                                        Some(true) => g.add_player_to_room(room_id, id, username, rule),
+                                        Some(true) => {
+                                            g.add_player_to_room(room_id, id, username, rule)
+                                        }
                                     }
                                 };
 
@@ -306,7 +305,9 @@ pub async fn handle_reliable_connection(
                                                 )
                                             } else {
                                                 (
-                                                    g.add_player_to_room(room_id, id, username, rule),
+                                                    g.add_player_to_room(
+                                                        room_id, id, username, rule,
+                                                    ),
                                                     Some(room_id),
                                                 )
                                             }
