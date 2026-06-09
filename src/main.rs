@@ -65,6 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting server...");
 
     let ws_addr = env::var("WS_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    info!("Listening on {ws_addr}...");
+
     let listener = TcpListener::bind(&ws_addr).await?;
 
     let mut m = MediaEngine::default();
