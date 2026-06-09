@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::env;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::Instrument;
 use tracing::debug;
 use tracing::info;
@@ -84,7 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let game = Arc::new(Mutex::new(game::Game::default()));
+    // Game は読み取り(中継時の RTCDataChannel 取得)が高頻度・書き込み(ルーム操作)が低頻度
+    // なので RwLock を使い、中継の読み取りロックを全ルーム並行に取れるようにする(Issue #8)。
+    let game = Arc::new(RwLock::new(game::Game::default()));
 
     while let Ok((stream, _)) = listener.accept().await {
         nest!(game, api);

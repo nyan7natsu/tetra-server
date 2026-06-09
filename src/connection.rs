@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use std::{sync::Arc, time::Duration};
-use tokio::{sync::Mutex, time::sleep};
+use tokio::{sync::RwLock, time::sleep};
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
@@ -31,9 +31,9 @@ macro_rules! jsend {
 /// 指定ルームに居る全プレイヤーの reliable チャンネルへ RoomInfoNotification をプッシュする。
 /// 参加・退出・マッチ成立でルーム構成が変わったときに各クライアントへ伝えるための関数。
 /// 注意: 内部で game ロックを取得するため、呼び出し側はロックを保持していないこと。
-async fn notify_room(game: &Arc<Mutex<Game>>, room_id: Uuid) {
+async fn notify_room(game: &Arc<RwLock<Game>>, room_id: Uuid) {
     let (body, dcs): (Vec<u8>, Vec<Arc<webrtc::data_channel::RTCDataChannel>>) = {
-        let game = game.lock().await;
+        let game = game.read().await;
         let Some(room) = game.rooms.get(&room_id) else {
             return;
         };
@@ -65,12 +65,12 @@ async fn notify_room(game: &Arc<Mutex<Game>>, room_id: Uuid) {
 
 pub async fn handle_reliable_connection(
     dc: Arc<webrtc::data_channel::RTCDataChannel>,
-    game: Arc<Mutex<Game>>,
+    game: Arc<RwLock<Game>>,
     id: uuid::Uuid,
 ) -> () {
     let dc_clone = Arc::clone(&dc);
 
-    game.lock()
+    game.write()
         .await
         .add_reliable_connection(id, Arc::clone(&dc));
 
@@ -135,7 +135,7 @@ pub async fn handle_reliable_connection(
                         "Received Close opcode from player [{}]. Closing connection...",
                         id
                     );
-                    let mut game = game.lock().await;
+                    let mut game = game.write().await;
                     if let Some(state) = game.get_connection_state(&id) {
                         let mut state = state.lock().unwrap();
                         *state = crate::game::ConnectionState::Disconnected;
@@ -164,7 +164,7 @@ pub async fn handle_reliable_connection(
 
                             payload::JsonMessage::JSONGetRoomsRequest(req) => {
                                 let req_id = req.id;
-                                let game = game.lock().await;
+                                let game = game.read().await;
                                 let rooms: Vec<payload::ListRoomInfo> = game
                                     .rooms
                                     .iter()
@@ -208,7 +208,7 @@ pub async fn handle_reliable_connection(
                                     .collect();
 
                                 // 作成者は new_room の中で自動的に最初のプレイヤーとして参加する
-                                let (room_id, code) = game.lock().await.new_room(
+                                let (room_id, code) = game.write().await.new_room(
                                     id,
                                     room_name,
                                     max_players,
@@ -238,7 +238,7 @@ pub async fn handle_reliable_connection(
                                 // ロックを取得して参加処理。パスワード検証はここで行い、
                                 // 満員/開始済み/存在チェックは add_player_to_room に委譲する。
                                 let result = {
-                                    let mut g = game.lock().await;
+                                    let mut g = game.write().await;
                                     let pw_ok = g.rooms.get(&room_id).map(|room| {
                                         room.password.is_none() || room.password == password
                                     });
@@ -286,7 +286,7 @@ pub async fn handle_reliable_connection(
                                 let rule = req.rule;
 
                                 let (result, joined_room) = {
-                                    let mut g = game.lock().await;
+                                    let mut g = game.write().await;
                                     match g.find_room_by_code(&code) {
                                         None => (Err("Room not found".to_string()), None),
                                         Some(room_id) => {
@@ -351,7 +351,7 @@ pub async fn handle_reliable_connection(
                                 let username = req.username;
                                 let rule = req.rule;
 
-                                let outcome = game.lock().await.random_match(id, username, rule);
+                                let outcome = game.write().await.random_match(id, username, rule);
                                 match outcome {
                                     MatchResult::Matched { room_id, .. } => {
                                         jsend!(
@@ -380,7 +380,7 @@ pub async fn handle_reliable_connection(
                             }
                             payload::JsonMessage::JSONCancelRandomMatchRequest(req) => {
                                 let req_id = req.id;
-                                let success = game.lock().await.cancel_random_match(&id);
+                                let success = game.write().await.cancel_random_match(&id);
                                 jsend!(
                                     dc_clone,
                                     JSONCancelRandomMatchResponse {
@@ -395,7 +395,7 @@ pub async fn handle_reliable_connection(
                                 let room_id = req.room_id;
 
                                 let leave_result: Result<(), String> = {
-                                    let mut g = game.lock().await;
+                                    let mut g = game.write().await;
                                     if g.rooms.contains_key(&room_id) {
                                         // players からの除去と経路表の削除をまとめて行う
                                         g.leave_room(&id);
@@ -425,7 +425,7 @@ pub async fn handle_reliable_connection(
                                 let room_id = req.room_id;
 
                                 let update_result = {
-                                    let mut game_mut = game.lock().await;
+                                    let mut game_mut = game.write().await;
                                     let room = match game_mut.rooms.get_mut(&room_id) {
                                         Some(r) => r,
                                         None => {
@@ -514,7 +514,7 @@ pub async fn handle_reliable_connection(
                 }
                 payload::Opcode::GameEventPayload => {
                     // 中身は解釈せず、相手の reliable チャンネルへフレームを素通し中継する。
-                    let opponent_dc = game.lock().await.get_opponent_channel(&id, true);
+                    let opponent_dc = game.read().await.get_opponent_channel(&id, true);
                     match opponent_dc {
                         Some(dc) => {
                             if let Err(e) = dc.send(&msg.data).await {
@@ -537,7 +537,7 @@ pub async fn handle_reliable_connection(
         let game = Arc::clone(&game);
         Box::pin(async move {
             {
-                let game = game.lock().await;
+                let game = game.write().await;
                 if let Some(state) = game.get_connection_state(&id) {
                     let mut state = state.lock().unwrap();
                     if matches!(*state, crate::game::ConnectionState::Disconnected) {
@@ -554,7 +554,7 @@ pub async fn handle_reliable_connection(
 
             sleep(Duration::from_secs(30)).await;
 
-            let mut game = game.lock().await;
+            let mut game = game.write().await;
             if let Some(state) = game.get_connection_state(&id) {
                 if matches!(*state.lock().unwrap(), crate::game::ConnectionState::Disconnected) {
                     game.remove_connection(&id).await;
@@ -570,12 +570,12 @@ pub async fn handle_reliable_connection(
 
 pub async fn handle_unreliable_connection(
     dc: Arc<webrtc::data_channel::RTCDataChannel>,
-    game: Arc<Mutex<Game>>,
+    game: Arc<RwLock<Game>>,
     id: uuid::Uuid,
 ) -> () {
     let dc_clone = Arc::clone(&dc);
 
-    game.lock()
+    game.write()
         .await
         .add_unreliable_connection(id, Arc::clone(&dc));
 
@@ -638,7 +638,7 @@ pub async fn handle_unreliable_connection(
                 payload::Opcode::PieceStatePayload => {
                     // 中身は解釈せず、相手の unreliable チャンネルへフレームを素通し中継する。
                     // 高頻度(30〜60Hz)・最新優先・欠落OK のホットパス。
-                    let opponent_dc = game.lock().await.get_opponent_channel(&id, false);
+                    let opponent_dc = game.read().await.get_opponent_channel(&id, false);
                     if let Some(dc) = opponent_dc {
                         if let Err(e) = dc.send(&msg.data).await {
                             error!("Failed to relay PieceState to opponent: {e}");
@@ -656,7 +656,7 @@ pub async fn handle_unreliable_connection(
         let game = Arc::clone(&game);
         Box::pin(async move {
             {
-                let game = game.lock().await;
+                let game = game.write().await;
                 if let Some(state) = game.get_connection_state(&id) {
                     let mut state = state.lock().unwrap();
                     if matches!(*state, crate::game::ConnectionState::Disconnected) {
@@ -673,7 +673,7 @@ pub async fn handle_unreliable_connection(
 
             sleep(Duration::from_secs(30)).await;
 
-            let mut game = game.lock().await;
+            let mut game = game.write().await;
             if let Some(state) = game.get_connection_state(&id) {
                 if matches!(*state.lock().unwrap(), crate::game::ConnectionState::Disconnected) {
                     game.remove_connection(&id).await;
