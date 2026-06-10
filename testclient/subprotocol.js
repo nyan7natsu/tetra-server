@@ -34,15 +34,28 @@
     PENDING: 0x06,
     GAMEOVER: 0x07,
     CONTROL: 0x08, // 対戦の開始/再戦合意（ロビー段のクライアント間ハンドシェイク）
+    LOCKCHAIN: 0x09, // ぷよ: 連鎖前の確定盤面（受信側パペットが連鎖演出を自前で再生する起点）
+    SE: 0x0a, // 離散SE（発音タイミング同期用。盤面イベントから独立して相手へ「この音を今鳴らす」）
   });
+
+  // SE イベントの音種コード（seId）。盤面スナップショットでは表現できない発音タイミングを同期する。
+  const SE_ID = Object.freeze({ PUYO_FIX: 1 });
+  const SE_KEY = Object.freeze({ 1: 'puyo_fix' });
 
   // ── CONTROL アクション（仕様 §4・サブタグ 0x08） ──
   //   READY   = 開始/再戦の準備完了（seed を持つ。両者の seed を XOR して共有シードにする）
   //   UNREADY = 準備をキャンセル（seed は未使用）
+  //   RULE    = 在室中のルール変更通知（seed フィールドにルールコード 0=tet / 1=puyo を載せる）
   const CTRL = Object.freeze({
     READY: 0x01,
     UNREADY: 0x02,
+    RULE: 0x03,
   });
+
+  // CONTROL の RULE アクションで使うルールコード（seed フィールドに格納）
+  const RULE_CODE = Object.freeze({ tet: 0, puyo: 1 });
+  function ruleToCode(rule) { return rule === 'puyo' ? 1 : 0; }
+  function codeToRule(code) { return code === 1 ? 'puyo' : 'tet'; }
 
   // ──────────────────────────────────────────
   // 低レベル: ByteWriter / ByteReader（little-endian）
@@ -206,6 +219,20 @@
     return new Writer(6).u8(EV.GAMEOVER).u32(t).u8(result).finish();
   }
 
+  // LockChain ── ぷよ専用: 連鎖が始まる「直前」の確定盤面（操作ぷよ着地後・消去前）: board(102B)
+  //   送信側はペア固定時（fixWait5f→checkErase 遷移）に1回送る。
+  //   受信側はパペット盤面へ反映し、puyo_fix SE を鳴らしてから連鎖演出を**自前で再生**する
+  //   （実 PuyoGame の連鎖ロジックを駆動＝点滅/連鎖文字/落下/連鎖SEを完全再現）。
+  function encodeLockChainPuyo({ t, board }) {
+    _assertLen(board, PUYO_COLS * PUYO_ROWS, "puyo board");
+    return new Writer(5 + board.length).u8(EV.LOCKCHAIN).u32(t).bytes(board).finish();
+  }
+
+  // SE ── seId:u8（離散SE。発音タイミングを盤面イベントから独立して同期する）
+  function encodeSe({ t = 0, seId }) {
+    return new Writer(6).u8(EV.SE).u32(t).u8(seId).finish();
+  }
+
   // Control ── action:u8 + seed:u32（開始/再戦合意。seed は READY 時の共有シード素材）
   //   サーバーは中身を解釈しないため、CONTROL も既存の中継経路で相手へそのまま届く。
   function encodeControl({ t = 0, action, seed = 0 }) {
@@ -273,6 +300,14 @@
         const seed = r.u32();
         return { kind: "control", t, action, seed };
       }
+      case EV.LOCKCHAIN: {
+        const board = r.bytes(PUYO_COLS * PUYO_ROWS);
+        return { kind: "lockchain", rule: "puyo", t, board };
+      }
+      case EV.SE: {
+        const seId = r.u8();
+        return { kind: "se", t, seId, seKey: SE_KEY[seId] || null };
+      }
       default:
         return { kind: "unknown", t, tag };
     }
@@ -329,7 +364,7 @@
     VERSION: 1,
     TET_COLS, TET_ROWS, TET_BUFFER_ROWS, TET_TOTAL_ROWS,
     PUYO_COLS, PUYO_ROWS, TET_EMPTY, PUYO_EMPTY,
-    EV, CTRL,
+    EV, CTRL, RULE_CODE, ruleToCode, codeToRule, SE_ID, SE_KEY,
     // PieceState
     encodePieceStateTet, encodePieceStatePuyo, decodePieceState,
     // GameEvent encoders
@@ -337,6 +372,7 @@
     encodeLockTet, encodeLockPuyo,
     encodeClearTet, encodeClearPuyo,
     encodeGarbage, encodeHold, encodePending, encodeGameOver, encodeControl,
+    encodeLockChainPuyo, encodeSe,
     // GameEvent decoder
     decodeGameEvent,
     // board builders / inverse
