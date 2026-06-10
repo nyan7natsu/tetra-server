@@ -58,10 +58,21 @@
 | `0x03` | Clear | テト: `rows:u8`, `rowIdx:u8×rows`, `flags:u8`(bit0 B2B / bit1 PC / bit2 T-spin) ／ ぷよ: `chain:u8`, `clearedCells:u8`（演出キュー用・**任意**。盤面は Lock が権威） |
 | `0x04` | **GarbageSend ★ゲーム影響** | `amount:u16`, `holes:u8×amount`（各おじゃま単位の穴/列。テト=各行の穴列 0–9、ぷよ=各おじゃまの列） |
 | `0x05` | Hold | `heldType:u8`（テトのみ） |
-| `0x06` | PendingUpdate | `pending:u16`（相手の予告ゲージ表示用） |
+| `0x06` | PendingUpdate | `ready:u16`, `unready:u16`（相手の予告ゲージ表示用・フェーズ別。ready=確定/降下可段, unready=猶予段。いずれも internal 非表示段は除外） |
 | `0x07` | GameOver | `result:u8`（0=topout/負, 1=clear/勝） |
+| `0x08` | **Control（開始/再戦合意・ルール変更）** | `action:u8`, `seed:u32`。`action`=`0x01 READY`（開始/再戦の準備完了。`seed`=共有シード素材）/`0x02 UNREADY`（準備取消・`seed` 未使用）/`0x03 RULE`（在室中のルール変更通知。`seed`=ルールコード `0=tet` / `1=puyo`） |
+| `0x09` | LockChain（ぷよ連鎖起点盤面） | `board:u8×102`（ぷよ盤面 §5）。**ぷよ専用**。連鎖判定の直前＝操作ぷよ確定盤面（`fixWait5f→checkErase` 遷移）を 1 回送る。受信側パペットはこの盤面から連鎖を**自前で再生**（実 PuyoGame の連鎖状態機械を駆動＝点滅/連鎖文字/落下/連鎖SEを完全再現） |
+| `0x0a` | SE（離散SE発音同期） | `seId:u8`（`1`=puyo_fix）。盤面イベントから独立して「この音を今鳴らす」を相手へ送る。発音タイミングが盤面スナップショット（Lock/LockChain＝固定アニメ後で遅れる）とずれる音に使う。ぷよ設置音はペア着地（`_fixPuyo`/split 着地）の瞬間に送り、受信側は即 `playSe` |
 
 > **表示同期 vs ゲーム影響**: `0x04 GarbageSend` のみ受信側の自分のゲームに反映（予告に積む。相殺/着弾は受信側の既存ロジック）。他はすべて相手ミニ盤面への描画のみで自分のゲームに影響しない。
+
+> **Control（`0x08`）= ロビー段のクライアント間ハンドシェイク**: 両プレイヤーが在室中、各自「対戦開始 / REMATCH」で `READY` を送る。`READY` には乱数 `seed` を載せ、受信側は **自分の seed と相手の seed を XOR**（0 のときは 1）して共有シードを得る。両者 READY がそろった瞬間に各自カウントダウン開始＝**ずれ≒片道遅延**で同時開始。共有シードは本体エンジンの「同ツモ」（テト `getNextType` / ぷよ `_initActiveColors`・`_makePair` の専用乱数 `tumoRng`）に注入する。サーバーは中身を解釈せず中継するのみ（Rust 変更不要）。
+
+> **Control `RULE`（`0x08`/`action 0x03`）= 在室中のルール変更通知**: ロビーで相手が見えている状態でルール（TET/PUYO）を切り替えたとき、JSON 層は相手へ中継されないため CONTROL を使って通知する。受信側は相手のルール表示（バッジ）と対戦開始時の `oppRule` を更新する。
+
+> **LockChain（`0x09`）= ぷよ連鎖をクライアント側で全再生**: パペットは実 PuyoGame インスタンスなので、連鎖前の確定盤面を渡してその連鎖状態機械（`checkErase→erasing→eraseWait→dropping`）を rAF で駆動すれば、点滅・連鎖文字・落下・連鎖SE が完全再現される。攻撃送信系は `isVersusMode=false` で全て無効化されるため副作用なし。受信側は「消せる組が無い `checkErase`」を検出して停止し、その先の おじゃま降下/次ツモ生成（盤面外ロジック）には踏み込まない。連鎖後＋おじゃま込みの確定盤面は通常の Lock（`0x02`）が補正として届く（再生中なら終了まで適用を保留）。テトのライン消去演出は対象外（盤面 Lock のみ）。
+
+> **ぷよ設置音は SE（`0x0a`）で同期**: 旧版は LockChain/Lock 到着時に `puyo_fix` を鳴らしていたが、これらは固定アニメ後（`fixWait5f`）のため**実際の着地より遅れる**（連鎖の無い設置では旧 Lock タイミングと体感差が出ない）。設置音は `_fixPuyo`／split 着地の `playSe('puyo_fix')` と同じ瞬間に `SE{seId=PUYO_FIX}` を送り、受信側は即 `playSe('puyo_fix')`。これで相手の設置音が自分と同じ間で鳴る。LockChain/Lock 側では `puyo_fix` を鳴らさない（二重発音回避）。
 
 ## 5. 盤面スナップショット（Lock `0x02` ボディ）
 
