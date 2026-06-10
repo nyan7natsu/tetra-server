@@ -104,7 +104,6 @@ json_message!(
         RoomUpdateRequest, (id, Uuid), (room_id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>);
         RoomUpdateResponse, (id, Uuid), (success, bool), (message, Option<String>);
         RoomInfoNotification, (room_id, Uuid), (room_name, String), (players, Vec<(Uuid, String, String)>), (max_players, u8), (tags, Vec<u32>);
-        RoomLeaveNotification, (message, String);
     }
 );
 
