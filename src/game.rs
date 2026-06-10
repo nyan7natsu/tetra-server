@@ -93,24 +93,26 @@ impl Game {
         }
     }
 
-    pub async fn remove_connection(&mut self, player_id: &Uuid) {
-        let reliable = self.get_reliable_connection(player_id);
-        let unreliable = self.get_unreliable_connection(player_id);
-        if let Some(dc) = reliable {
-            if let Err(e) = dc.close().await {
-                eprintln!("Failed to close reliable data channel: {e}");
-            }
-        }
-        if let Some(dc) = unreliable {
-            if let Err(e) = dc.close().await {
-                eprintln!("Failed to close unreliable data channel: {e}");
-            }
-        }
-        self.connections.remove(player_id);
+    /// プレイヤーを Game の内部状態（接続表・待機列・経路表）から取り除き、
+    /// クローズすべき DataChannel を返す。
+    ///
+    /// `dc.close().await` は内部でネットワーク I/O を伴い時間がかかりうるため、
+    /// ここでは close せずチャンネルを返すだけにする。Game は単一の `RwLock` で
+    /// 共有されており、close を保持中の write ロック内で await すると
+    /// その間ずっと全ルームの中継 read ロックまで含む Game 全操作がブロックされる。
+    /// 呼び出し側は write ロックを解放してから返り値を `close().await` すること。
+    #[must_use = "返された DataChannel はロック解放後に close すること"]
+    pub fn remove_connection(&mut self, player_id: &Uuid) -> Vec<Arc<RTCDataChannel>> {
+        let channels: Vec<Arc<RTCDataChannel>> = self
+            .connections
+            .remove(player_id)
+            .map(|pair| pair.reliable.into_iter().chain(pair.unreliable).collect())
+            .unwrap_or_default();
         // 待機列からも除外
         self.matchmaking_queue.retain(|(pid, _, _)| pid != player_id);
         // 経路表・所属ルームからも退去させる
         self.leave_room(player_id);
+        channels
     }
 
     /// プレイヤーをルームに参加させる（players への追加＋経路表更新）。
@@ -341,6 +343,41 @@ mod tests {
         game.leave_room(&guest);
         assert_eq!(game.get_opponent(&owner), None);
         assert_eq!(game.room_of(&guest), None);
+    }
+
+    /// remove_connection は close すべきチャンネルを返すだけで、その場では await しない
+    /// （ロックを保持したまま close.await すると全 Game 操作がブロックされるため）。
+    /// 接続表・待機列・経路表からはちゃんと消えること、戻り値で close 対象を受け取れることを確認する。
+    #[test]
+    fn remove_connection_clears_state_and_returns_channels() {
+        let mut game = Game::default();
+        let owner = Uuid::new_v4();
+        let guest = Uuid::new_v4();
+
+        let (room_id, _code) = game.new_room(
+            owner,
+            "test".to_string(),
+            2,
+            None,
+            vec![],
+            "owner".to_string(),
+            "tet".to_string(),
+        );
+        game.add_player_to_room(room_id, guest, "guest".to_string(), "puyo".to_string())
+            .expect("guest should join");
+
+        // DataChannel を持たない（reliable/unreliable とも None の）プレイヤーでも
+        // 状態の掃除は行われ、閉じるチャンネルは無いので空ベクタが返る。
+        let channels = game.remove_connection(&guest);
+        assert!(channels.is_empty());
+
+        // 経路表・ルームの players から消えている
+        assert_eq!(game.room_of(&guest), None);
+        assert_eq!(game.get_opponent(&owner), None);
+
+        // owner を抜くと無人になりルームごと消える
+        let _ = game.remove_connection(&owner);
+        assert!(game.rooms.get(&room_id).is_none());
     }
 
     /// Issue #8 の核心: Game を RwLock で包むと「読み取りは並行・書き込みは排他」に

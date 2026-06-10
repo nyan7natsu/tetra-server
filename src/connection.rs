@@ -28,6 +28,17 @@ macro_rules! jsend {
     };
 }
 
+/// `Game::remove_connection` が返したチャンネルを閉じる。
+/// close はネットワーク I/O を伴うため、必ず Game の write ロックを解放してから呼ぶこと
+/// （ロック保持中に close.await すると全 Game 操作がその間ブロックされる）。
+async fn close_channels(channels: Vec<Arc<webrtc::data_channel::RTCDataChannel>>) {
+    for dc in channels {
+        if let Err(e) = dc.close().await {
+            error!("Failed to close data channel: {e}");
+        }
+    }
+}
+
 /// 指定ルームに居る全プレイヤーの reliable チャンネルへ RoomInfoNotification をプッシュする。
 /// 参加・退出・マッチ成立でルーム構成が変わったときに各クライアントへ伝えるための関数。
 /// 注意: 内部で game ロックを取得するため、呼び出し側はロックを保持していないこと。
@@ -135,12 +146,15 @@ pub async fn handle_reliable_connection(
                         "Received Close opcode from player [{}]. Closing connection...",
                         id
                     );
-                    let mut game = game.write().await;
-                    if let Some(state) = game.get_connection_state(&id) {
-                        let mut state = state.lock().unwrap();
-                        *state = crate::game::ConnectionState::Disconnected;
-                    }
-                    game.remove_connection(&id).await;
+                    let channels = {
+                        let mut game = game.write().await;
+                        if let Some(state) = game.get_connection_state(&id) {
+                            let mut state = state.lock().unwrap();
+                            *state = crate::game::ConnectionState::Disconnected;
+                        }
+                        game.remove_connection(&id)
+                    };
+                    close_channels(channels).await;
                 }
                 payload::Opcode::JSONRequestPayload => {
                     // JSONRequestPayload (bincode/wincode serialized)
@@ -565,7 +579,8 @@ pub async fn handle_reliable_connection(
                 (still_disconnected, game.room_of(&id))
             };
             if should_remove {
-                game.write().await.remove_connection(&id).await;
+                let channels = game.write().await.remove_connection(&id);
+                close_channels(channels).await;
                 println!("Removed player [{id}] data after 5 seconds of disconnection.");
                 // 残ったプレイヤーへ更新後の一覧を通知（無人で部屋が消えていれば何もしない）。
                 // write ロックを解放してから呼ぶ（notify_room が内部で read ロックを取るため）。
@@ -693,7 +708,8 @@ pub async fn handle_unreliable_connection(
                 (still_disconnected, game.room_of(&id))
             };
             if should_remove {
-                game.write().await.remove_connection(&id).await;
+                let channels = game.write().await.remove_connection(&id);
+                close_channels(channels).await;
                 println!("Removed player [{id}] data after 5 seconds of disconnection.");
                 // 残ったプレイヤーへ更新後の一覧を通知（無人で部屋が消えていれば何もしない）。
                 // write ロックを解放してから呼ぶ（notify_room が内部で read ロックを取るため）。
