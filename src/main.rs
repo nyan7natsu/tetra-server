@@ -131,6 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             candidate: init.candidate,
                             sdp_mid: init.sdp_mid,
                             sdp_m_line_index: init.sdp_mline_index,
+                            user_id: player_id,
                         };
                         let json = serde_json::to_string(&msg).unwrap();
                         let _ = ws_sender
@@ -213,6 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             candidate,
                             sdp_mid,
                             sdp_m_line_index,
+                            user_id: _,
                         } => {
                             let init = RTCIceCandidateInit {
                                 candidate,

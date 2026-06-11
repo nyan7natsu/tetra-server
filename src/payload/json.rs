@@ -100,9 +100,10 @@ json_message!(
         CancelRandomMatchResponse, (id, Uuid), (success, bool);
         LeaveRoomRequest, (id, Uuid), (room_id, Uuid);
         LeaveRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
-        RoomUpdateRequest, (id, Uuid), (room_id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>);
-        RoomUpdateResponse, (id, Uuid), (success, bool), (message, Option<String>);
-        RoomInfoNotification, (room_id, Uuid), (room_name, String), (players, Vec<(Uuid, String, String)>), (max_players, u8), (tags, Vec<u32>);
+        UpdateRoomRequest, (id, Uuid), (room_id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>);
+        UpdateRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
+        RoomInfoNotificationRequest, (id, Uuid);
+        RoomInfoNotification, (room_id, Uuid), (owner_id, Uuid), (room_name, String), (players, Vec<(Uuid, String, String)>), (max_players, u8), (tags, Vec<u32>);
     }
 );
 

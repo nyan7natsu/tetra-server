@@ -13,5 +13,6 @@ pub enum SignalMessage {
         candidate: String,
         sdp_mid: Option<String>,
         sdp_m_line_index: Option<u16>,
+        user_id: uuid::Uuid,
     },
 }

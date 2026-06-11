@@ -37,8 +37,10 @@ async fn notify_room(game: &Arc<RwLock<Game>>, room_id: Uuid) {
         let Some(room) = game.rooms.get(&room_id) else {
             return;
         };
+        let owner_id = room.owner;
         let notif = payload::JSONRoomInfoNotification {
             room_id,
+            owner_id,
             room_name: room.room_name.clone(),
             players: room.players.clone(),
             max_players: room.max_players,
@@ -47,7 +49,7 @@ async fn notify_room(game: &Arc<RwLock<Game>>, room_id: Uuid) {
         let body = payload::JsonMessage::JSONRoomInfoNotification(notif)
             .to_response_body()
             .expect("Failed to build RoomInfoNotification");
-        let dcs = room
+        let dcs: Vec<Arc<webrtc::data_channel::RTCDataChannel>> = room
             .players
             .iter()
             .filter_map(|(pid, _, _)| game.get_reliable_connection(pid))
@@ -421,7 +423,7 @@ pub async fn handle_reliable_connection(
                                 }
                             }
 
-                            payload::JsonMessage::JSONRoomUpdateRequest(req) => {
+                            payload::JsonMessage::JSONUpdateRoomRequest(req) => {
                                 let req_id = req.id;
                                 let room_id = req.room_id;
 
@@ -432,7 +434,7 @@ pub async fn handle_reliable_connection(
                                         None => {
                                             jsend!(
                                                 dc_clone,
-                                                JSONRoomUpdateResponse {
+                                                JSONUpdateRoomResponse {
                                                     id: req_id,
                                                     success: false,
                                                     message: Some("Room not found".to_string()),
@@ -445,7 +447,7 @@ pub async fn handle_reliable_connection(
                                     if room.owner != id {
                                         jsend!(
                                             dc_clone,
-                                            JSONRoomUpdateResponse {
+                                            JSONUpdateRoomResponse {
                                                 id: req_id,
                                                 success: false,
                                                 message: Some(
@@ -489,7 +491,7 @@ pub async fn handle_reliable_connection(
 
                                     jsend!(
                                         dc_clone,
-                                        JSONRoomUpdateResponse {
+                                        JSONUpdateRoomResponse {
                                             id: req_id,
                                             success: update_result.is_ok(),
                                             message: update_result.clone().err()
@@ -501,6 +503,35 @@ pub async fn handle_reliable_connection(
 
                                 if update_result {
                                     notify_room(&game, room_id).await;
+                                }
+                            }
+
+                            payload::JsonMessage::JSONRoomInfoNotificationRequest(_) => {
+                                let game = game.read().await;
+                                let room_id_opt = game.room_of(&id);
+                                match room_id_opt {
+                                    Some(room_id) => {
+                                        let room = match game.rooms.get(&room_id) {
+                                            Some(r) => r,
+                                            None => {
+                                                error!("Room not found for RoomInfoNotificationRequest: {room_id}");
+                                                return;
+                                            }
+                                        };
+                                        let owner_id = room.owner;
+                                        let notif = payload::JSONRoomInfoNotification {
+                                            room_id,
+                                            owner_id,
+                                            room_name: room.room_name.clone(),
+                                            players: room.players.clone(),
+                                            max_players: room.max_players,
+                                            tags: room.tags.iter().map(|t| *t as u32).collect(),
+                                        };
+                                        jsend!(dc_clone, JSONRoomInfoNotification { ..notif });
+                                    }
+                                    None => {
+                                        error!("Player [{}] requested RoomInfoNotification but is not in any room", id);
+                                    }
                                 }
                             }
 
