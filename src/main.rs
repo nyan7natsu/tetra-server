@@ -9,6 +9,10 @@ use axum::{
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt};
+use reqwest::{
+    Url,
+    header::{self, HeaderMap, HeaderValue},
+};
 use std::env;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -325,6 +329,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     "Unsupported client version: {version}. Allowed versions: {:?}\nPlease reload or reopen the client to update to a supported version.",
                                     state.allow_versions
                                 )),
+                                rtc_peer_ice_config: None,
                             })
                             .unwrap()
                             .into(),
@@ -334,6 +339,51 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     } else {
                         info!("Client authenticated with version: {version}");
 
+                        let ice_config: Option<String> = {
+                            let token_id = env::var("CF_TURN_TOKEN_ID").ok();
+                            let token_secret = env::var("CF_TURN_API_TOKEN").ok();
+
+                            if let (Some(id), Some(secret)) = (token_id, token_secret) {
+                                let url = Url::parse(format!("https://rtc.live.cloudflare.com/v1/turn/keys/{}/credentials/generate-ice-servers", id).as_str()).unwrap();
+                                let mut map: std::collections::HashMap<&str, i32> =
+                                    std::collections::HashMap::new();
+                                map.insert("ttl", 86400);
+
+                                let header = format!("Bearer {}", secret);
+                                let mut headers = HeaderMap::new();
+                                headers.insert(
+                                    header::AUTHORIZATION,
+                                    HeaderValue::from_str(&header).unwrap(),
+                                );
+                                headers.insert(
+                                    header::CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+
+                                let client = reqwest::Client::new();
+                                let res = client.post(url).headers(headers).json(&map).send().await;
+                                if let Ok(r) = res {
+                                    if r.status().is_success() {
+                                        let text = r.text().await;
+                                        if let Ok(t) = text {
+                                            Some(t)
+                                        } else {
+                                            error!("Failed to read ICE server response text");
+                                            None
+                                        }
+                                    } else {
+                                        error!("Failed to get ICE servers: HTTP {}", r.status());
+                                        None
+                                    }
+                                } else {
+                                    error!("Failed to send request for ICE servers");
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        };
+
                         let _ = ws_sender
                             .lock()
                             .await
@@ -341,6 +391,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 serde_json::to_string(&signaling::SignalMessage::AuthResult {
                                     success: true,
                                     message: None,
+                                    rtc_peer_ice_config: ice_config,
                                 })
                                 .unwrap()
                                 .into(),
@@ -368,6 +419,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     raise_fd_limit();
+
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
 
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())

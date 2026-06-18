@@ -28,5 +28,6 @@ pub enum SignalMessage {
     AuthResult {
         success: bool,
         message: Option<String>,
+        rtc_peer_ice_config: Option<String>,
     },
 }

@@ -22,3 +22,5 @@ dotenvy = "0.15"
 libc = "0.2"
 axum = { version = "0.8.9", features = ["ws"] }
 tower-http = { version = "0.7.0", features = ["trace", "cors"] }
+reqwest = { version = "0.13.4", features = ["json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
