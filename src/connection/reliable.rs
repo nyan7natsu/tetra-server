@@ -120,7 +120,7 @@ pub async fn handle_reliable_connection(
                         let mut state = match state.lock() {
                             Ok(s) => s,
                             Err(e) => {
-                                println!("Failed to lock connection state for player {}: {:?}", id, e);
+                                error!("Failed to lock connection state for player {}: {:?}", id, e);
                                 return;
                             }
                         };

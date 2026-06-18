@@ -13,9 +13,7 @@ use std::env;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::Instrument;
-use tracing::debug;
-use tracing::info;
-use tracing::info_span;
+use tracing::{debug, error, info, info_span, warn};
 use tracing_appender::rolling;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
@@ -76,9 +74,9 @@ fn raise_fd_limit() {
         if (lim.rlim_cur as u64) < target {
             lim.rlim_cur = target as libc::rlim_t;
             if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) == 0 {
-                println!("Raised RLIMIT_NOFILE soft limit to {target}");
+                info!("Raised RLIMIT_NOFILE soft limit to {target}");
             } else {
-                eprintln!("Failed to raise RLIMIT_NOFILE (continuing with current limit)");
+                error!("Failed to raise RLIMIT_NOFILE (continuing with current limit)");
             }
         }
     }
@@ -189,7 +187,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             let player_id_for_dc = Arc::clone(&player_id_for_dc);
             let dc_label = dc.label().to_string();
 
-            println!("Data channel created: {dc_label}");
+            info!("Data channel created: {dc_label}");
 
             match dc_label.as_str() {
                 connection::RELIABLE_CHANNEL_LABEL => Box::pin(async move {
@@ -257,11 +255,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     }
                                 }
                             }
-                            println!(
-                                "Reconnect offer: rebinding new PC to existing player [{rid}]"
-                            );
+                            info!("Reconnect offer: rebinding new PC to existing player [{rid}]");
                         } else {
-                            println!(
+                            warn!(
                                 "Reconnect offer for unknown player [{rid}]; treating as new connection."
                             );
                         }

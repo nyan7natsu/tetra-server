@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::RwLock, time::sleep};
-use tracing::error;
+use tracing::{error, warn};
 use uuid::Uuid;
 
 use crate::game::{Game, WinnerStatus};
@@ -109,7 +109,7 @@ pub async fn disconnect_player(
             let mut state = match state.lock() {
                 Ok(s) => s,
                 Err(e) => {
-                    println!("Failed to lock connection state for player {}: {:?}", id, e);
+                    error!("Failed to lock connection state for player {}: {:?}", id, e);
                     return;
                 }
             };
@@ -118,7 +118,7 @@ pub async fn disconnect_player(
                 return;
             }
             *state = crate::game::ConnectionState::Disconnected;
-            println!(
+            warn!(
                 "Connection lost for player [{}]. Removing in {RECONNECT_GRACE_SECS}s if not recovered...",
                 id
             );
@@ -147,7 +147,7 @@ pub async fn disconnect_player(
                 let s = match s.lock() {
                     Ok(s) => s,
                     Err(e) => {
-                        println!("Failed to lock connection state for player {}: {:?}", id, e);
+                        error!("Failed to lock connection state for player {}: {:?}", id, e);
                         return false;
                     }
                 };
@@ -176,7 +176,7 @@ pub async fn disconnect_player(
         };
 
         game.write().await.remove_connection(&id);
-        println!("Removed player [{id}] data after 5 seconds of disconnection.");
+        warn!("Removed player [{id}] data after 5 seconds of disconnection.");
 
         if let Some(room_id) = room_id {
             notify_room(&game, room_id).await;

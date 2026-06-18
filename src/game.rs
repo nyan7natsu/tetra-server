@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 use webrtc::data_channel::RTCDataChannel;
 
@@ -96,12 +97,12 @@ impl Game {
                 let mut state = match pair.state.lock() {
                     Ok(s) => s,
                     Err(e) => {
-                        println!("Failed to lock connection state for player {}: {:?}", id, e);
+                        info!("Failed to lock connection state for player {}: {:?}", id, e);
                         return;
                     }
                 };
                 *state = ConnectionState::Connected;
-                println!(
+                info!(
                     "🎉 プレイヤー [{}] の Reliable と Unreliable が両方揃いました！通信準備完了！",
                     id
                 );
@@ -128,7 +129,7 @@ impl Game {
         tokio::spawn(async move {
             if let Some(dc) = channels.0 {
                 if let Err(err) = dc.close().await {
-                    println!(
+                    error!(
                         "Failed to close reliable channel for player {}: {:?}",
                         player_id, err
                     );
@@ -136,7 +137,7 @@ impl Game {
             }
             if let Some(dc) = channels.1 {
                 if let Err(err) = dc.close().await {
-                    println!(
+                    error!(
                         "Failed to close unreliable channel for player {}: {:?}",
                         player_id, err
                     );
@@ -468,7 +469,7 @@ impl Game {
             return WinnerStatus::MatchContinues;
         }
         room.alive_players.retain(|pid| pid != player_id);
-        println!(
+        debug!(
             "Recorded game over for player [{}] in room [{}]. Alive players remaining: {}",
             player_id,
             room_id,
