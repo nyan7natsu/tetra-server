@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Copy)]
@@ -32,10 +33,18 @@ pub struct Room {
     pub room_name: String,
     /// 最大プレイヤー数
     pub max_players: u8,
-    /// パスワードが設定されている場合はSome、そうでない場合はNone
-    pub password: Option<String>,
+    /// ルームの公開設定（true=ルーム一覧に表示、false=非表示でコード参加のみ）
+    pub is_public: bool,
     /// ルーム種別を表すタグ
     pub tags: Vec<RoomTag>,
     /// 友人参加用の短いルームコード（UUIDの代わりに共有する）
     pub code: String,
+    /// マッチ設定（vs_settings.js の設定を JSON シリアライズした文字列）。デフォルト "{}"。
+    pub match_setting: String,
+    /// 対戦中の生存プレイヤー ID リスト。start_match 時に全員で初期化され、ゲームオーバーごとに削除。
+    pub alive_players: Vec<Uuid>,
+    /// READY 済みプレイヤー ID リスト。マッチ開始/終了・入退室でリセットされる。
+    pub ready_players: Vec<Uuid>,
+    /// 各プレイヤーの RTT (ms)。クライアントからの自己報告値。
+    pub pings: HashMap<Uuid, u32>,
 }

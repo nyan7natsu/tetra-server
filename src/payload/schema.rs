@@ -50,6 +50,7 @@ macro_rules! schemas {
             }
 
             #[derive(Serialize, Deserialize, Debug)]
+            #[allow(unused)]
             #[repr(u8)]
             pub enum $enum_name {
                 $(
@@ -79,10 +80,17 @@ schemas! {
         JSONRequest, 0x03, (data, String);
         JSONResponse, 0x04, (data, String);
         Close, 0x05;
-        // 対戦中の中継用。サーバーは中身を解釈せず、相手の同種チャンネルへフレームを素通しする。
-        // GameEvent  : reliable 経由（spawn/lock/clear/garbage/gameover/start など離散イベント）
-        // PieceState : unreliable 経由（落下ミノ座標・回転など高頻度ストリーム）
-        GameEvent, 0x06, (data, Vec<u8>);
-        PieceState, 0x07, (data, Vec<u8>);
+        // 0x2N: 対戦中ゲームデータ。サーバーは「上位ニブル==2なら送信元UUID(16バイト)付与して同室全員へ中継」の1ルールで処理。
+        // reliable  : 0x21 Spawn / 0x22 Lock(フル盤面) / 0x23 Clear / 0x24 Garbage / 0x25 Hold / 0x26 MatchGameOver / 0x27 ChainReplay / 0x28 SE
+        // unreliable: 0x20 PieceState（落下ミノ座標・回転の高頻度ストリーム）
+        PieceState, 0x20, (data, Vec<u8>);
+        Spawn, 0x21, (data, Vec<u8>);
+        Lock, 0x22, (data, Vec<u8>);
+        Clear, 0x23, (data, Vec<u8>);
+        Garbage, 0x24, (data, Vec<u8>);
+        Hold, 0x25, (data, Vec<u8>);
+        MatchGameOver, 0x26, (data, Vec<u8>);
+        ChainReplay, 0x27, (data, Vec<u8>);
+        SE, 0x28, (data, Vec<u8>);
     }
 }

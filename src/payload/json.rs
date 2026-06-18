@@ -88,11 +88,11 @@ json_message!(
         Pong, (id, Uuid);
         GetRoomsRequest, (id, Uuid);
         GetRoomsResponse, (id, Uuid), (rooms, Vec<ListRoomInfo>);
-        CreateRoomRequest, (id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>), (username, String), (rule, String);
+        CreateRoomRequest, (id, Uuid), (room_name, String), (max_players, u8), (is_public, bool), (tags, Vec<u32>), (username, String), (rule, String);
         CreateRoomResponse, (id, Uuid), (room_id, Uuid), (code, String);
-        JoinRoomRequest, (id, Uuid), (room_id, Uuid), (password, Option<String>), (username, String), (rule, String);
+        JoinRoomRequest, (id, Uuid), (room_id, Uuid), (username, String), (rule, String);
         JoinRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
-        JoinByCodeRequest, (id, Uuid), (code, String), (password, Option<String>), (username, String), (rule, String);
+        JoinByCodeRequest, (id, Uuid), (code, String), (username, String), (rule, String);
         JoinByCodeResponse, (id, Uuid), (success, bool), (message, Option<String>), (room_id, Option<Uuid>);
         JoinRandomMatchRequest, (id, Uuid), (username, String), (rule, String);
         JoinRandomMatchResponse, (id, Uuid), (matched, bool), (room_id, Option<Uuid>);
@@ -100,10 +100,34 @@ json_message!(
         CancelRandomMatchResponse, (id, Uuid), (success, bool);
         LeaveRoomRequest, (id, Uuid), (room_id, Uuid);
         LeaveRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
-        UpdateRoomRequest, (id, Uuid), (room_id, Uuid), (room_name, String), (max_players, u8), (password, Option<String>), (tags, Vec<u32>);
+        UpdateRoomRequest, (id, Uuid), (room_id, Uuid), (room_name, String), (max_players, u8), (is_public, bool), (tags, Vec<u32>);
         UpdateRoomResponse, (id, Uuid), (success, bool), (message, Option<String>);
         RoomInfoNotificationRequest, (id, Uuid);
-        RoomInfoNotification, (room_id, Uuid), (owner_id, Uuid), (room_name, String), (players, Vec<(Uuid, String, String)>), (max_players, u8), (tags, Vec<u32>);
+        RoomInfoNotification, (room_id, Uuid), (owner_id, Uuid), (room_name, String), (players, Vec<(Uuid, String, String)>), (max_players, u8), (tags, Vec<u32>), (match_setting, String), (ready_players, Vec<Uuid>), (pings, Vec<(Uuid, u32)>), (code, String), (is_public, bool);
+        SetReadyRequest, (id, Uuid), (room_id, Uuid), (ready, bool);
+        SetReadyResponse, (id, Uuid), (success, bool), (message, Option<String>);
+        TimeSyncRequest, (id, Uuid);
+        TimeSyncResponse, (id, Uuid), (server_time_ms, u64);
+        UpdatePlayerPingRequest, (id, Uuid), (room_id, Uuid), (ping_ms, u32);
+        // ── マッチ制御 ────────────────────────────────────────────────────
+        StartMatchRequest, (id, Uuid), (room_id, Uuid);
+        StartMatchResponse, (id, Uuid), (success, bool), (message, Option<String>);
+        StartMatchNotification, (room_id, Uuid), (seed, Vec<u8>), (start_time_ms, u64), (match_setting, String);
+        UpdateMatchSettingRequest, (id, Uuid), (room_id, Uuid), (setting, String);
+        UpdateMatchSettingResponse, (id, Uuid), (success, bool), (message, Option<String>);
+        UpdateMatchSettingNotification, (room_id, Uuid), (setting, String);
+        UpdatePlayerRuleRequest, (id, Uuid), (room_id, Uuid), (rule, String);
+        UpdatePlayerRuleResponse, (id, Uuid), (success, bool), (message, Option<String>);
+        PauseRequest, (id, Uuid), (room_id, Uuid);
+        PauseNotification, (room_id, Uuid), (paused_by, Uuid);
+        ResumeRequest, (id, Uuid), (room_id, Uuid);
+        ResumeNotification, (room_id, Uuid);
+        NotifyGameOverRequest, (id, Uuid), (room_id, Uuid);
+        NotifyGameOverResponse, (id, Uuid), (success, bool);
+        WinnerNotification, (room_id, Uuid), (winner, Option<Uuid>);
+        PostMatchActionRequest, (id, Uuid), (room_id, Uuid), (action, u8);
+        PostMatchActionNotification, (player_id, Uuid), (room_id, Uuid), (action, u8);
+        PlayerDisconnectedNotification, (room_id, Uuid), (player_id, Uuid);
     }
 );
 
