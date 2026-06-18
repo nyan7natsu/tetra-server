@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SignalMessage {
+    // WebRTC用シグナリングメッセージ
     Offer {
         sdp: String,
         /// 再接続時にクライアントが既存の player_id を載せる。存在すれば再バインド、
@@ -18,5 +19,10 @@ pub enum SignalMessage {
         sdp_mid: Option<String>,
         sdp_m_line_index: Option<u16>,
         user_id: uuid::Uuid,
+    },
+
+    // クライアント認証
+    Auth {
+        client_version: String,
     },
 }

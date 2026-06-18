@@ -47,6 +47,16 @@ struct AppState {
     game: Arc<RwLock<game::Game>>,
     api: Arc<webrtc::api::API>,
     config: RTCConfiguration,
+    allow_versions: Vec<String>,
+}
+
+/**
+ * バージョンのベクタを簡潔に書くためのマクロ。
+ */
+macro_rules! vers {
+    ($($v:expr),+ $(,)?) => {
+        vec![$($v.to_string()),+]
+    };
 }
 
 /// ファイルディスクリプタのソフト上限を引き上げる。
@@ -205,6 +215,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         },
     ));
 
+    let mut version_authenticated = false;
+
     while let Some(Ok(msg)) = ws_receiver.next().await {
         if let Message::Text(text) = msg {
             // 不正なシグナリングメッセージでタスクを panic させない
@@ -221,6 +233,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     sdp,
                     player_id: reconnect_id,
                 } => {
+                    if !version_authenticated {
+                        warn!("Received offer before client authentication; ignoring.");
+                        continue;
+                    }
                     // ★ 再接続: クライアントが既存の player_id を載せてきて、その人がまだ
                     //    サーバーに居る（猶予中など）なら、この新PCをそのIDへ再バインドする。
                     //    state を Establishing に戻して disconnect_player の猶予removalを止める
@@ -299,6 +315,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     sdp_m_line_index,
                     user_id: _,
                 } => {
+                    if !version_authenticated {
+                        warn!("Received offer before client authentication; ignoring.");
+                        continue;
+                    }
                     let init = RTCIceCandidateInit {
                         candidate,
                         sdp_mid,
@@ -306,6 +326,17 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         username_fragment: None,
                     };
                     let _ = peer_connection.add_ice_candidate(init).await;
+                }
+                signaling::SignalMessage::Auth { client_version } => {
+                    if !state.allow_versions.contains(&client_version) {
+                        error!(
+                            "Rejected connection with unsupported client version: {client_version}"
+                        );
+                        break;
+                    } else {
+                        version_authenticated = true;
+                        info!("Client authenticated with version: {client_version}");
+                    }
                 }
                 _ => {}
             }
@@ -386,7 +417,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // なので RwLock を使い、中継の読み取りロックを全ルーム並行に取れるようにする(Issue #8)。
     let game = Arc::new(RwLock::new(game::Game::default()));
 
-    let state = AppState { game, api, config };
+    let state = AppState {
+        game,
+        api,
+        config,
+        allow_versions: vers!("2.0.0", "1.3.0"),
+    };
 
     let app = Router::new()
         .route("/", get(hello))
