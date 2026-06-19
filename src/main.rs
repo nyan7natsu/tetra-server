@@ -376,7 +376,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         None
                                     }
                                 } else {
-                                    error!("Failed to send request for ICE servers");
+                                    error!(
+                                        "Failed to send request for ICE servers: {}",
+                                        res.err().unwrap()
+                                    );
                                     None
                                 }
                             } else {
