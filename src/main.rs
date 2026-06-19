@@ -472,6 +472,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = RTCConfiguration {
         ice_servers: vec![RTCIceServer {
             urls: vec![
+                "stun:stun.cloudflare.com:3478".to_string(),
                 "stun:stun.l.google.com:19302".to_string(),
                 "stun:stun1.l.google.com:19302".to_string(),
                 "stun:stun2.l.google.com:19302".to_string(),
